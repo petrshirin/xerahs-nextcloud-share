@@ -1,0 +1,16 @@
+# .NET
+bin/
+obj/
+publish/
+dist/
+*.user
+.vs/
+.idea/
+*.exe
+*.xsdp
+
+# macOS
+.DS_Store
+
+# Заметки Claude Code автора: личные пути, не для публикации
+CLAUDE.md

@@ -1,0 +1,52 @@
+# Релиз плагина: git tag v<версия из plugin.json> && git push origin v<версия>
+# Собирает nc-share против библиотек из архива XerahS и прикладывает nc-share-xerahs.zip к релизу —
+# его скачивает install-macos.sh по ссылке releases/latest/download/nc-share-xerahs.zip
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  # Версия XerahS, с которой проверен плагин; та же, что в install-macos.sh
+  XERAHS_VERSION: 0.31.4
+  XERAHS_REPO: ShareX/XerahS
+  XERAHS_SHA256: 25d38773c83926d2fd55597f9fb63bed832d3f3954502484dd76af729e96810c
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Версия в теге и в plugin.json совпадают
+        run: |
+          version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' xerahs-plugin/plugin.json)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "Тег $GITHUB_REF_NAME, а в plugin.json $version"; exit 1; }
+
+      # Библиотеки одинаковые во всех сборках XerahS, берём из архива для macOS
+      - name: Библиотеки XerahS
+        run: |
+          curl -fsSL -o xerahs.tar.gz "https://github.com/$XERAHS_REPO/releases/download/v$XERAHS_VERSION/XerahS-$XERAHS_VERSION-mac-arm64.tar.gz"
+          echo "$XERAHS_SHA256  xerahs.tar.gz" | sha256sum -c -
+          mkdir xerahs && tar -xzf xerahs.tar.gz -C xerahs
+
+      - name: Сборка
+        run: XERAHS_DIR="$PWD/xerahs/XerahS.app/Contents/MacOS" xerahs-plugin/pack.sh
+
+      - name: Релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/nc-share-xerahs.zip --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/nc-share-xerahs.zip --title "nc-share $GITHUB_REF_NAME" --generate-notes
+          fi

@@ -1,0 +1,12 @@
+{
+  "pluginId": "ncshare",
+  "name": "nc-share",
+  "version": "0.5.1",
+  "author": "Петр Ширин",
+  "description": "Меню после снимка: скопировать изображение, ссылка для команды или публичная ссылка со сроком. Загрузка в Nextcloud: WebDAV, OCS, вход через браузер (Login Flow v2).",
+  "apiVersion": "1.0",
+  "entryPoint": "NcShare.Plugin.NcShareProvider",
+  "assemblyFileName": "NcShare.Plugin.dll",
+  "supportedCategories": ["Image", "File"],
+  "dependencies": []
+}

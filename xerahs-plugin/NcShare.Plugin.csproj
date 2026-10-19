@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Плагин nc-share для XerahS. Собирается против библиотек из установленного XerahS,
+       поэтому совместим именно с этой версией; общие с XerahS библиотеки в плагин не копируются. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <RootNamespace>NcShare.Plugin</RootNamespace>
+    <AssemblyName>NcShare.Plugin</AssemblyName>
+    <XerahSDir Condition="'$(XerahSDir)' == ''">/Applications/XerahS.app/Contents/MacOS</XerahSDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <HostReference Include="XerahS.UploaderPluginSdk;XerahS.Uploaders;XerahS.Common;Newtonsoft.Json;Avalonia.Base;Avalonia.Controls" />
+    <Reference Include="@(HostReference)">
+      <HintPath>$(XerahSDir)/%(Identity).dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="plugin.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
