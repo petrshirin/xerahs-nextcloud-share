@@ -67,7 +67,8 @@ cat > "$tmp/configure.js" <<'JS'
 ObjC.import("Foundation");
 
 const IMAGE = 0, FILE = 2;
-const CAPTURE = { PrintScreen: "D3", RectangleRegion: "D4", ActiveWindow: null };   // сочетания Cmd+Shift+3/4
+// Сочетания сценариев снимков: Cmd+Shift+3/4 и Ctrl+Shift+A
+const CAPTURE = { PrintScreen: ["D3", "Shift, Meta"], RectangleRegion: ["D4", "Shift, Meta"], ActiveWindow: ["A", "Control, Shift"] };
 
 function readJson(path, fallback) {
     if (!$.NSFileManager.defaultManager.fileExistsAtPath(path)) return fallback;
@@ -139,8 +140,9 @@ function flags(value, add, remove) {
     return set.join(", ");
 }
 
-const hotkey = key => ({ Key: key, Modifiers: "Shift, Meta", IsValid: true, IsOnlyModifiers: false,
-                         HasControl: false, HasAlt: false, HasShift: true, HasMeta: true });
+const hotkey = ([key, mods]) => ({ Key: key, Modifiers: mods, IsValid: true, IsOnlyModifiers: false,
+                                   HasControl: mods.includes("Control"), HasAlt: mods.includes("Alt"),
+                                   HasShift: mods.includes("Shift"), HasMeta: mods.includes("Meta") });
 const noHotkey = () => ({ Key: "None", Modifiers: "None", IsValid: false, IsOnlyModifiers: false,
                           HasControl: false, HasAlt: false, HasShift: false, HasMeta: false });
 
@@ -182,7 +184,7 @@ function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, rem
 
     const wf = readJson(workflowsPath, null);
     if (!wf || !Array.isArray(wf.Hotkeys)) throw new Error("не понял формат " + workflowsPath);
-    const done = [];
+    const done = [], ours = [];
     for (const h of wf.Hotkeys) {
         const ts = h.TaskSettings, job = ts && ts.Job;
         if (!ts) continue;
@@ -195,22 +197,32 @@ function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, rem
             ts.CaptureSettings = ts.CaptureSettings || {};
             if (job === "PrintScreen") ts.CaptureSettings.UseModernCapture = false;   // системная screencapture: Retina, без курсора
             if (job === "RectangleRegion") ts.CaptureSettings.MacOSRegionSelectorPreference = "NativeCrosshair";
-            if (CAPTURE[job] && !done.includes(job)) h.HotkeyInfo = hotkey(CAPTURE[job]);
+            if (!done.includes(job)) {
+                h.HotkeyInfo = hotkey(CAPTURE[job]);
+                ours.push(h);
+            }
         } else if (job === "FileUpload") {
+            ts.AfterCaptureJob = flags(ts.AfterCaptureJob, [], ["CopyImageToClipboard"]);   // буфер — забота плагина
             ts.DestinationInstanceId = ids[FILE];
         } else continue;
         (ts.GeneralSettings = ts.GeneralSettings || {}).ShowToastNotificationAfterTaskCompleted = false;
         done.push(job);
     }
-    // Cmd+Shift+3/4 у других сценариев перехватили бы наши
+    // Те же сочетания у других сценариев перехватили бы наши
     for (const h of wf.Hotkeys) {
-        const k = h.HotkeyInfo, job = h.TaskSettings && h.TaskSettings.Job;
-        if (k && !CAPTURE[job] && k.Modifiers === "Shift, Meta" && (k.Key === "D3" || k.Key === "D4")) {
+        const k = h.HotkeyInfo;
+        if (k && !ours.includes(h) && Object.values(CAPTURE).some(([key, mods]) => k.Key === key && k.Modifiers === mods)) {
             h.HotkeyInfo = noHotkey();
             out.push("сочетание снято со сценария «" + h.Name + "»");
         }
     }
     for (const job of Object.keys(CAPTURE)) if (!done.includes(job)) out.push("ВНИМАНИЕ: нет сценария " + job);
+    // Сценарий OCR (Shift+PrintScreen) добавляет мастер первого запуска XerahS, к nc-share он не относится
+    const ocr = wf.Hotkeys.filter(h => h.TaskSettings && h.TaskSettings.Job === "OCR");
+    if (ocr.length) {
+        wf.Hotkeys = wf.Hotkeys.filter(h => !ocr.includes(h));
+        out.push("убран сценарий OCR");
+    }
 
     // «Start minimized to tray»: на macOS XerahS тогда живёт только в строке меню — без окна при запуске и
     // без значка в Dock. Значок в строке меню нужен, иначе программу не видно совсем
@@ -218,6 +230,11 @@ function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, rem
     if (app) {
         app.ShowTray = true;
         app.SilentRun = true;
+        // Мастер первого запуска переносит снимки в выбранную в нём папку — возвращаем папку XerahS по умолчанию
+        app.UseCustomScreenshotsPath = false;
+        app.CustomScreenshotsPath = "";
+        // Assistant (Ctrl+Shift+Space) к снимкам не относится, а сочетание занимает
+        app.AssistantEnabled = false;
     }
 
     writeJson(workflowsPath, wf);
@@ -226,6 +243,7 @@ function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, rem
     if (app) {
         writeJson(appPath, app);
         out.push("XerahS запускается свёрнутым: только значок в строке меню");
+        out.push("снимки сохраняются в ~/Documents/XerahS/Screenshots, Assistant выключен");
     } else out.push("ВНИМАНИЕ: нет " + appPath);
     return out.join("\n");
 }
