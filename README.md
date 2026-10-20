@@ -96,4 +96,4 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/petrshirin/xerahs-nextcl
 **Выпуск.** Подними версию в `xerahs-plugin/plugin.json` и `NcShareProvider.Version`, затем
 `git tag v<версия> && git push origin v<версия>`. GitHub Actions соберёт плагин против библиотек из архива XerahS
 и приложит `nc-share-xerahs.zip` к релизу; установщик берёт архив из последнего релиза. Тег должен совпадать с
-версией в `plugin.json`, иначе сборка остановится.
+версией в `plugin.json`, иначе сборка остановится. Проверить сборку без релиза: Actions → release → Run workflow.

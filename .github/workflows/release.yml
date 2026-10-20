@@ -1,11 +1,13 @@
 # Релиз плагина: git tag v<версия из plugin.json> && git push origin v<версия>
 # Собирает nc-share против библиотек из архива XerahS и прикладывает nc-share-xerahs.zip к релизу —
-# его скачивает install-macos.sh по ссылке releases/latest/download/nc-share-xerahs.zip
+# его скачивает install-macos.sh по ссылке releases/latest/download/nc-share-xerahs.zip.
+# Ручной запуск (Actions → release → Run workflow) только собирает плагин, без релиза
 name: release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,15 +20,17 @@ env:
 
 jobs:
   plugin:
-    runs-on: ubuntu-latest
+    # Версия образа указана явно: смена ubuntu-latest не меняет сборку незаметно
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
       - name: Версия в теге и в plugin.json совпадают
+        if: github.ref_type == 'tag'
         run: |
           version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' xerahs-plugin/plugin.json)
           test "v$version" = "$GITHUB_REF_NAME" || { echo "Тег $GITHUB_REF_NAME, а в plugin.json $version"; exit 1; }
@@ -42,6 +46,7 @@ jobs:
         run: XERAHS_DIR="$PWD/xerahs/XerahS.app/Contents/MacOS" xerahs-plugin/pack.sh
 
       - name: Релиз
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
