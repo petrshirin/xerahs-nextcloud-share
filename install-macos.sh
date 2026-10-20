@@ -144,7 +144,7 @@ const hotkey = key => ({ Key: key, Modifiers: "Shift, Meta", IsValid: true, IsOn
 const noHotkey = () => ({ Key: "None", Modifiers: "None", IsValid: false, IsOnlyModifiers: false,
                           HasControl: false, HasAlt: false, HasShift: false, HasMeta: false });
 
-function apply(instancesPath, workflowsPath, serverUrl, baseFolder, removeOthers) {
+function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, removeOthers) {
     const out = [];
     const cfg = readJson(instancesPath, {});
     cfg.Instances = cfg.Instances || [];
@@ -212,9 +212,21 @@ function apply(instancesPath, workflowsPath, serverUrl, baseFolder, removeOthers
     }
     for (const job of Object.keys(CAPTURE)) if (!done.includes(job)) out.push("ВНИМАНИЕ: нет сценария " + job);
 
+    // «Start minimized to tray»: на macOS XerahS тогда живёт только в строке меню — без окна при запуске и
+    // без значка в Dock. Значок в строке меню нужен, иначе программу не видно совсем
+    const app = readJson(appPath, null);
+    if (app) {
+        app.ShowTray = true;
+        app.SilentRun = true;
+    }
+
     writeJson(workflowsPath, wf);
     writeJson(instancesPath, cfg);
     out.push("сценарии: весь экран, область, активное окно → редактор → nc-share");
+    if (app) {
+        writeJson(appPath, app);
+        out.push("XerahS запускается свёрнутым: только значок в строке меню");
+    } else out.push("ВНИМАНИЕ: нет " + appPath);
     return out.join("\n");
 }
 
@@ -236,7 +248,7 @@ function run(argv) {
         case "current-server": return current(args[0], "ServerUrl");
         case "current-folder": return current(args[0], "BaseFolder");
         case "foreign": return foreign(args[0]);
-        case "apply": return apply(args[0], args[1], args[2], args[3], args[4] === "1");
+        case "apply": return apply(args[0], args[1], args[2], args[3], args[4], args[5] === "1");
         case "hotkeys-off": return hotkeysOff(args.map(Number));
     }
     throw new Error("неизвестная команда " + cmd);
@@ -373,7 +385,7 @@ mkdir -p "$PLUGIN_DIR"
 cp "$tmp/plugin/"* "$PLUGIN_DIR/"
 info "плагин установлен в $PLUGIN_DIR"
 
-jxa apply "$instances" "$(workflows_file)" "$server" "$folder" "$remove" | sed 's/^/  /'
+jxa apply "$instances" "$(workflows_file)" "$SETTINGS/ApplicationConfig.json" "$server" "$folder" "$remove" | sed 's/^/  /'
 
 # Системные Cmd+Shift+3/4 (28 и 30): пока включены, macOS перехватывает сочетания раньше XerahS.
 # Ctrl+Cmd+Shift+3/4 (снимок в буфер) и панель Cmd+Shift+5 остаются системными
