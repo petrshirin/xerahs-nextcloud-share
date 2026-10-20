@@ -329,6 +329,7 @@ else
         info "Открой в браузере папку Nextcloud, куда класть снимки, и скопируй адрес из адресной строки."
         info "Или введи путь, например /Screenshots: папки, которых нет, создадутся при первой загрузке."
     fi
+    warn "Внутри выбранной папки nc-share создаст папку screenshots/ и будет класть снимки туда."
     for _ in 1 2 3; do
         if [ -n "$cur_folder" ]; then ask "Enter — оставить, или вставь адрес другой папки: "; else ask "Адрес папки: "; fi
         if [ -z "$REPLY" ] && [ -n "$cur_folder" ]; then folder="$cur_folder"; break; fi
