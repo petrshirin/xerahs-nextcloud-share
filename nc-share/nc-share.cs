@@ -934,7 +934,8 @@ namespace NcShare
     //     двухфакторная проверка, свой пароль nc-share не видит. Логин и пароль приложения хранятся зашифрованными (DPAPI) ---
     sealed class Credential
     {
-        static readonly string FilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "nc-share", "credential.dat");
+        public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "nc-share");
+        static readonly string FilePath = Path.Combine(Dir, "credential.dat");
         static readonly byte[] Entropy = Encoding.UTF8.GetBytes("nc-share");
 
         public string User, Password;
@@ -946,7 +947,7 @@ namespace NcShare
             {
                 try
                 {
-                    string[] parts = Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(FilePath), Entropy, DataProtectionScope.CurrentUser)).Split('\n');
+                    string[] parts = Unprotect(File.ReadAllBytes(FilePath)).Split('\n');
                     // Вход, сохранённый прежними версиями, сервера не помнит — считаем, что он от текущего
                     bool sameServer = parts.Length == 2 || (parts.Length == 3 && string.Equals(parts[2], settings.Server, StringComparison.OrdinalIgnoreCase));
                     if (sameServer) return new Credential { User = parts[0], Password = parts[1] };
@@ -955,26 +956,76 @@ namespace NcShare
             }
 
             loader.Show(0);
-            LoginFlow flow;
-            try { flow = Nextcloud.StartLoginFlow(settings); }
+            Credential c;
+            LoginFlow flow = null;
+            try
+            {
+                c = LoginFlow.TakePending(settings.Server);
+                if (c == null)
+                {
+                    flow = Nextcloud.StartLoginFlow(settings);
+                    flow.Save(settings.Server);
+                }
+            }
             finally { loader.Hide(); }
-            Credential c = LoginWindow.Run(theme, settings, flow);
+            if (c == null) c = LoginWindow.Run(theme, settings, flow);
             if (c == null) return null;
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
-            byte[] plain = Encoding.UTF8.GetBytes(c.User + "\n" + c.Password + "\n" + settings.Server);
-            File.WriteAllBytes(FilePath, ProtectedData.Protect(plain, Entropy, DataProtectionScope.CurrentUser));
+            LoginFlow.Delete();
+            Directory.CreateDirectory(Dir);
+            File.WriteAllBytes(FilePath, Protect(c.User + "\n" + c.Password + "\n" + settings.Server));
             return c;
         }
 
         public static void Forget() { File.Delete(FilePath); }
+
+        public static byte[] Protect(string text)
+        {
+            return ProtectedData.Protect(Encoding.UTF8.GetBytes(text), Entropy, DataProtectionScope.CurrentUser);
+        }
+
+        public static string Unprotect(byte[] data)
+        {
+            return Encoding.UTF8.GetString(ProtectedData.Unprotect(data, Entropy, DataProtectionScope.CurrentUser));
+        }
     }
 
+    // Начатый вход хранится, пока Nextcloud его помнит (20 минут): если окно входа закрыли, а в браузере
+    // доступ всё-таки разрешили, следующая загрузка забирает пароль приложения без второго входа
     sealed class LoginFlow
     {
+        static readonly string FilePath = Path.Combine(Credential.Dir, "login-flow.dat");
+        static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(20);
+
         public string LoginUrl, Endpoint, Token;
+
+        public void Save(string server)
+        {
+            Directory.CreateDirectory(Credential.Dir);
+            File.WriteAllBytes(FilePath, Credential.Protect(Endpoint + "\n" + Token + "\n" + server));
+        }
+
+        // null — начатого входа нет, он устарел или в браузере его так и не подтвердили
+        public static Credential TakePending(string server)
+        {
+            if (!File.Exists(FilePath) || DateTime.Now - File.GetLastWriteTime(FilePath) > Lifetime) return null;
+            try
+            {
+                string[] parts = Credential.Unprotect(File.ReadAllBytes(FilePath)).Split('\n');
+                if (parts.Length != 3 || !string.Equals(parts[2], server, StringComparison.OrdinalIgnoreCase)) return null;
+                return Nextcloud.PollLoginFlow(new LoginFlow { Endpoint = parts[0], Token = parts[1] });
+            }
+            catch (CryptographicException) { return null; }
+            catch (NcException) { return null; }   // со старым входом что-то не так — просто начинаем новый
+        }
+
+        public static void Delete()
+        {
+            if (File.Exists(FilePath)) File.Delete(FilePath);
+        }
     }
 
-    // Окно на время входа: браузер уже открыт, окно ждёт подтверждения и закрывается само
+    // Окно на время входа: браузер уже открыт, окно ждёт подтверждения и закрывается само.
+    // Стоит в углу экрана, как уведомление: по центру оно закрывало бы кнопку входа на странице в браузере
     sealed class LoginWindow : Form
     {
         static readonly TimeSpan Limit = TimeSpan.FromMinutes(10);
@@ -1002,7 +1053,7 @@ namespace NcShare
             t = theme;
             this.flow = flow;
             FormBorderStyle = FormBorderStyle.None;
-            StartPosition = FormStartPosition.CenterScreen;
+            StartPosition = FormStartPosition.Manual;
             TopMost = true;
             BackColor = t.Back;
             Font = t.Font;
@@ -1010,8 +1061,8 @@ namespace NcShare
 
             int w = t.Px(340), x = t.Px(16), y = x;
             y = AddLabel("Вход в Nextcloud", t.BoldFont, t.Text, x, y, w) + t.Px(6);
-            y = AddLabel("В браузере открылся " + server + ". Войдите и разрешите доступ для nc-share — окно закроется само. Спрашиваю один раз.",
-                t.Font, t.Dim, x, y, w) + t.Px(14);
+            y = AddLabel("В браузере открылся " + server + ". Войдите и разрешите доступ для nc-share — это окно закроется само, " +
+                "и загрузка продолжится. Входить нужно один раз.", t.Font, t.Dim, x, y, w) + t.Px(14);
             int bw = (w - t.Px(8)) / 2;
             Button again = AddButton("Открыть ещё раз", x, y, bw);
             again.Click += delegate { Process.Start(flow.LoginUrl); };
@@ -1019,6 +1070,8 @@ namespace NcShare
             cancel.Click += delegate { Close(); };
             CancelButton = cancel;
             ClientSize = new Size(w + 2 * x, y + t.Px(32) + x);
+            Rectangle wa = Screen.FromPoint(MousePosition).WorkingArea;
+            Location = new Point(wa.Right - Width - t.Px(12), wa.Bottom - Height - t.Px(12));
         }
 
         int AddLabel(string text, Font font, Color color, int x, int y, int w)
