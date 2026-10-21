@@ -1,39 +1,49 @@
 # xerahs-nextcloud-share — скриншоты со ссылкой в Nextcloud
 
-Сделал снимок, поправил в редакторе, выбрал в меню, что с ним сделать: скопировать картинку или получить ссылку на
-неё в своём [Nextcloud](https://nextcloud.com) — для команды или публичную со сроком. Снимает и редактирует
-[XerahS](https://github.com/ShareX/XerahS) (ShareX для macOS, Windows и Linux), меню и загрузку добавляет плагин
+Сделал снимок или записал видео, поправил в редакторе, выбрал в меню, что с ним сделать: скопировать или получить
+ссылку в своём [Nextcloud](https://nextcloud.com) — для команды или публичную со сроком. Снимает и редактирует на macOS
+[XerahS](https://github.com/ShareX/XerahS), на Windows — [ShareX](https://getsharex.com); меню и загрузку добавляет
 **nc-share** из этого репозитория. Подходит любой сервер Nextcloud — [требования](#nextcloud).
 
 ## Как работает
 
-`Cmd+Shift+4` → выдели область → редактор (стрелки, текст, размытие, обрезка) → меню:
+Выдели область → редактор (стрелки, текст, размытие, обрезка) → меню:
 
 | Клавиша | Что делает |
 |---|---|
-| `1` | копирует изображение в буфер; в Nextcloud ничего не уходит |
+| `1` | копирует изображение в буфер (видео — файлом); в Nextcloud ничего не уходит |
 | `2` | ссылка для команды `…/index.php/f/<id>`: без срока, открывается после входа в Nextcloud у тех, у кого есть доступ к папке |
-| `3` `4` `5` | публичная ссылка на 1, 7 или 30 дней: открывается без входа, ведёт на саму картинку |
-| `Esc` | отмена: снимок удаляется, в буфер ничего не попадает |
+| `3` `4` `5` | публичная ссылка на 1, 7 или 30 дней: открывается без входа, ведёт на саму картинку (у видео — на страницу с плеером) |
+| `Esc` | отмена: ничего не загружается, в буфер ничего не попадает. На macOS снимок удаляется, на Windows остаётся в папке ShareX |
 
-Ссылка сразу оказывается в буфере. Уведомление в углу показывает загрузку, щелчок по нему открывает ссылку. Файлы
-раскладываются по типу и месяцу: `<твоя папка>/screenshots/team/2026/10/…`, `…/screenshots/public/…`.
+Ссылка сразу оказывается в буфере. Уведомление в углу показывает результат, щелчок по нему открывает ссылку. Файлы
+раскладываются по типу и месяцу: `<твоя папка>/screenshots/team/2026/10/…`, `…/screenshots/public/…`, видео — в
+`…/videos/…`.
 
-| Сочетание | Снимок |
-|---|---|
-| `Cmd+Shift+3` | весь экран |
-| `Cmd+Shift+4` | область — системное выделение macOS |
-| `Ctrl+Shift+A` | активное окно |
-| `Cmd+Shift+5` | системная панель macOS (запись видео) — как обычно, без меню |
+| Снимок | macOS (XerahS) | Windows (ShareX) |
+|---|---|---|
+| область | `Cmd+Shift+4` — системное выделение macOS | `Ctrl+PrintScreen` |
+| весь экран | `Cmd+Shift+3` | `PrintScreen` |
+| активное окно | `Ctrl+Shift+A` | `Alt+PrintScreen` |
+| запись видео | `Cmd+Shift+5` — системная панель, как обычно, без меню | `Shift+PrintScreen`, стоп — тем же сочетанием → меню без редактора |
+| запись GIF | — | `Ctrl+Shift+PrintScreen` |
 
-## Установка на macOS
+## Установка
+
+macOS — в «Терминале»:
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/petrshirin/xerahs-nextcloud-share/main/install-macos.sh)"
 ```
 
-Установщик поставит XerahS и плагин, спросит папку в Nextcloud (адрес из браузера — сервер он возьмёт оттуда же) и
-настроит сочетания. Подробнее и другие ОС — [«Установка»](docs/install.md).
+Windows — в PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/petrshirin/xerahs-nextcloud-share/main/install-windows.ps1 | iex
+```
+
+Установщик поставит XerahS или ShareX, если их нет, и nc-share, спросит папку в Nextcloud (адрес из браузера — сервер
+он возьмёт оттуда же) и настроит сочетания. Подробнее — [«Установка»](docs/install.md).
 
 ## Nextcloud
 
@@ -41,7 +51,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/petrshirin/xerahs-nextcl
 |---|---|
 | Версия | **Nextcloud 16 или новее**: с 16-й версии есть вход через браузер (Login Flow v2). Проверено на Nextcloud 33.0.9 |
 | Что нужно от сервера | WebDAV (`/remote.php/webdav`), Share API (`/ocs/v2.php/apps/files_sharing`), Login Flow v2 (`/index.php/login/v2`) — всё включено по умолчанию, отдельные приложения не нужны |
-| Вход | в браузере, как на сайте: пароль, SSO, двухфакторная проверка. Плагин получает пароль приложения и хранит его в Связке ключей; твой пароль он не видит |
+| Вход | в браузере, как на сайте: пароль, SSO, двухфакторная проверка. nc-share получает пароль приложения и хранит его в Связке ключей (на Windows — зашифрованным в профиле пользователя); твой пароль он не видит |
 | Права | запись в папку. Для публичных ссылок — право делиться, а на сервере должны быть разрешены ссылки (настройки администратора → «Общий доступ») |
 | Срок публичной ссылки | 1, 7 и 30 дней. Если администратор ограничил максимальный срок, пункты длиннее лимита сервер отклонит — сроки меняются настройкой `PublicDays` |
 | Ссылка для команды | открывается у тех, у кого есть доступ к папке: общая папка (Group folders) или папка, которой ты поделился с коллегами. Файл в личной папке без общего доступа откроешь только ты |
@@ -52,7 +62,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/petrshirin/xerahs-nextcl
 | ОС | Состояние | Установка |
 |---|---|---|
 | macOS | работает, проверено на Apple Silicon | [инструкция](docs/install.md#macos) |
-| Windows | прототип для ShareX: то же меню, отдельная программа `nc-share.exe` | [инструкция](docs/install.md#windows-sharex) |
+| Windows | ShareX и программа `nc-share.exe`: снимки и запись видео, то же меню | [инструкция](docs/install.md#windows-sharex) |
 | Linux | не проверялось | — |
 
 ## Ограничения
@@ -65,22 +75,25 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/petrshirin/xerahs-nextcl
 - Обе ошибки исправлены в сборке [KovaForge XerahS 0.33.3](https://github.com/KovaForge/XerahS/releases/tag/v0.33.3),
   но на macOS она падает при запуске, поэтому установщик пока ставит 0.31.4. Плагин готов к исправленным версиям:
   на XerahS новее 0.33.1 он цвета не трогает.
-- У плагина нет окна настроек: сервер и папка задаются установщиком, остальное — в `uploader-instances.json`.
+- У nc-share нет окна настроек: сервер и папка задаются установщиком, остальное — в `uploader-instances.json`
+  (на Windows — в `nc-share.ini`).
 
 ## Репозиторий
 
 | Каталог | Что внутри |
 |---|---|
 | [`install-macos.sh`](install-macos.sh) | установщик для macOS |
+| [`install-windows.ps1`](install-windows.ps1) | установщик для Windows |
 | [`xerahs-plugin/`](xerahs-plugin) | плагин nc-share для XerahS: C#, .NET 10, Avalonia |
-| [`nc-share/`](nc-share) | прототип для Windows: ShareX + `nc-share.exe` (C# 5, WinForms) |
+| [`nc-share/`](nc-share) | nc-share для ShareX на Windows: `nc-share.exe` (C# 5, WinForms) и `nc-share.ini` |
 | [`docs/`](docs) | [установка](docs/install.md) |
 | [`.github/workflows/release.yml`](.github/workflows/release.yml) | сборка релиза |
 
 ## Помощь
 
 Не получилось или есть идея — заведи [issue](https://github.com/petrshirin/xerahs-nextcloud-share/issues): что делал, что
-получилось, версии macOS, XerahS и Nextcloud и строки `[nc-share]` из лога XerahS.
+получилось, версии ОС, XerahS или ShareX и Nextcloud, а ещё строки `[nc-share]` из лога XerahS или
+`%TEMP%\nc-share.log` на Windows.
 
 ## Разработка
 
@@ -92,6 +105,10 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/petrshirin/xerahs-nextcl
 - `xerahs-plugin/pack.sh` — архив для релиза `dist/nc-share-xerahs.zip`.
 
 Лог — `~/Documents/XerahS/Logs/<год-месяц>/`, строки плагина начинаются с `[nc-share]`.
+
+**Windows.** `nc-share.exe` собирает сам установщик компилятором C# из .NET Framework; со своими исходниками —
+`$env:NCSHARE_SRC = "$PWD\nc-share"; iex (Get-Content -Raw -Encoding UTF8 .\install-windows.ps1)`. Подробнее —
+[«Сборка из исходников»](docs/install.md#сборка-из-исходников-1).
 
 **Выпуск.** Подними версию в `xerahs-plugin/plugin.json` и `NcShareProvider.Version`, затем
 `git tag v<версия> && git push origin v<версия>`. GitHub Actions соберёт плагин против библиотек из архива XerahS
