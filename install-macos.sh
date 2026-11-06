@@ -50,7 +50,11 @@ stop_xerahs() {
     fail "XerahS не закрылся. Закрой его через значок в строке меню и запусти установку ещё раз."
 }
 
-workflows_file() { ls -t "$SETTINGS"/WorkflowsConfig-*.json 2>/dev/null | head -1 || true; }
+# Сценарии XerahS: WorkflowsConfig-<имя компьютера>.json, а до первого запуска — WorkflowsConfig.json, который создал
+# установщик (XerahS при запуске сам копирует его в файл с именем компьютера)
+workflows_file() {
+    { ls -t "$SETTINGS"/WorkflowsConfig-*.json 2>/dev/null || ls "$SETTINGS"/WorkflowsConfig.json 2>/dev/null; } | head -1 || true
+}
 
 # Версия $1 старше $2 (вида 0.33.3)
 older() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$1" ]; }
@@ -137,7 +141,7 @@ function newId() {
 function flags(value, add, remove) {
     const set = String(value || "").split(",").map(s => s.trim()).filter(s => s && s !== "None" && !remove.includes(s));
     for (const a of add) if (!set.includes(a)) set.push(a);
-    return set.join(", ");
+    return set.length ? set.join(", ") : "None";   // пустую строку XerahS заменит своими флагами по умолчанию
 }
 
 const hotkey = ([key, mods]) => ({ Key: key, Modifiers: mods, IsValid: true, IsOnlyModifiers: false,
@@ -145,6 +149,26 @@ const hotkey = ([key, mods]) => ({ Key: key, Modifiers: mods, IsValid: true, IsO
                                    HasShift: mods.includes("Shift"), HasMeta: mods.includes("Meta") });
 const noHotkey = () => ({ Key: "None", Modifiers: "None", IsValid: false, IsOnlyModifiers: false,
                           HasControl: false, HasAlt: false, HasShift: false, HasMeta: false });
+
+// Первая установка: настроек XerahS ещё нет. Сам XerahS пишет их только после мастера первого запуска или при выходе
+// через меню, поэтому заготовку создаёт установщик, а недостающее XerahS при запуске дополнит значениями по умолчанию.
+// ApplicationVersion — признак, что первый запуск позади: мастер не появится
+function seed(settingsDir, version) {
+    const appPath = settingsDir + "/ApplicationConfig.json";
+    if (!$.NSFileManager.defaultManager.fileExistsAtPath(appPath)) writeJson(appPath, { ApplicationVersion: version });
+    const workflow = (job, name, task) => ({ Id: ObjC.unwrap($.NSUUID.UUID.UUIDString).toLowerCase(), HotkeyInfo: noHotkey(),
+                                             Name: name, Enabled: true, PinnedToTray: false,
+                                             TaskSettings: Object.assign({ Job: job, Description: name }, task) });
+    // Только сценарии nc-share; первые три XerahS показывает в меню значка. Видео пишет системная панель Cmd+Shift+5
+    writeJson(settingsDir + "/WorkflowsConfig.json", { Hotkeys: [
+        workflow("PrintScreen", "Full screen capture"),
+        workflow("ActiveWindow", "Active window capture"),
+        workflow("RectangleRegion", "Region capture"),
+        // Без копирования в буфер: буфером занимается плагин (у XerahS по умолчанию CopyImageToClipboard, SaveImageToFile)
+        workflow("FileUpload", "File upload", { AfterCaptureJob: "SaveImageToFile" })
+    ] });
+    return "созданы настройки XerahS: весь экран, активное окно, область, загрузка файла";
+}
 
 function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, removeOthers) {
     const out = [];
@@ -204,6 +228,7 @@ function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, rem
         } else if (job === "FileUpload") {
             ts.AfterCaptureJob = flags(ts.AfterCaptureJob, [], ["CopyImageToClipboard"]);   // буфер — забота плагина
             ts.DestinationInstanceId = ids[FILE];
+            h.PinnedToTray = true;   // в меню значка; иначе загрузка файла — только из главного окна XerahS
         } else continue;
         (ts.GeneralSettings = ts.GeneralSettings || {}).ShowToastNotificationAfterTaskCompleted = false;
         done.push(job);
@@ -256,6 +281,7 @@ function run(argv) {
         case "current-server": return current(args[0], "ServerUrl");
         case "current-folder": return current(args[0], "BaseFolder");
         case "foreign": return foreign(args[0]);
+        case "seed": return seed(args[0], args[1]);
         case "apply": return apply(args[0], args[1], args[2], args[3], args[4], args[5] === "1");
         case "hotkeys-off": return hotkeysOff(args.map(Number));
     }
@@ -315,14 +341,6 @@ unzip -q "$zip" -d "$tmp/plugin" || fail "Архив плагина повреж
 [ -f "$tmp/plugin/plugin.json" ] && [ -f "$tmp/plugin/NcShare.Plugin.dll" ] || fail "В архиве нет плагина nc-share: $zip"
 version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$tmp/plugin/plugin.json")
 info "nc-share $version"
-
-if [ -z "$(workflows_file)" ]; then
-    info "XerahS ещё не запускался. Запускаю, чтобы он создал свои настройки; мастер первого запуска можно закрыть…"
-    open "$APP"
-    for _ in $(seq 1 120); do [ -n "$(workflows_file)" ] && break; sleep 1; done
-    [ -n "$(workflows_file)" ] || fail "XerahS не создал настройки за 2 минуты. Запусти его вручную и повтори установку."
-    sleep 3   # пусть допишет остальные файлы
-fi
 
 title "3/5. Nextcloud"
 instances="$SETTINGS/uploader-instances.json"
@@ -389,7 +407,7 @@ fi
 title "4/5. Настройка"
 stop_xerahs
 mkdir -p "$BACKUP"
-cp -R "$SETTINGS" "$BACKUP/Settings"
+[ ! -d "$SETTINGS" ] || cp -R "$SETTINGS" "$BACKUP/Settings"
 defaults export com.apple.symbolichotkeys "$BACKUP/com.apple.symbolichotkeys.plist"
 [ ! -d "$PLUGIN_DIR" ] || cp -R "$PLUGIN_DIR" "$BACKUP/ncshare-plugin"
 info "Копия настроек: $BACKUP"
@@ -399,6 +417,10 @@ mkdir -p "$PLUGIN_DIR"
 cp "$tmp/plugin/"* "$PLUGIN_DIR/"
 info "плагин установлен в $PLUGIN_DIR"
 
+if [ -z "$(workflows_file)" ]; then
+    mkdir -p "$SETTINGS"
+    jxa seed "$SETTINGS" "$XERAHS_VERSION" | sed 's/^/  /'
+fi
 jxa apply "$instances" "$(workflows_file)" "$SETTINGS/ApplicationConfig.json" "$server" "$folder" "$remove" | sed 's/^/  /'
 
 # Системные Cmd+Shift+3/4 (28 и 30): пока включены, macOS перехватывает сочетания раньше XerahS.
@@ -435,5 +457,9 @@ fi
 info "Нет значка XerahS в строке меню? Если стоит менеджер строки меню (Bartender, Ice, Thaw), перезапусти его."
 info ""
 info "Вернуть как было:"
-info "  pkill -x XerahS; cp -R \"$BACKUP/Settings/\" \"$SETTINGS/\"; rm -rf \"$PLUGIN_DIR\""
+if [ -d "$BACKUP/Settings" ]; then
+    info "  pkill -x XerahS; cp -R \"$BACKUP/Settings/\" \"$SETTINGS/\"; rm -rf \"$PLUGIN_DIR\""
+else   # настроек XerahS до установки не было — их создал установщик
+    info "  pkill -x XerahS; rm -rf \"$SETTINGS\" \"$PLUGIN_DIR\""
+fi
 info "  defaults import com.apple.symbolichotkeys \"$BACKUP/com.apple.symbolichotkeys.plist\"; $ACTIVATE -u"
