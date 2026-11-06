@@ -103,16 +103,18 @@ public sealed class NcShareUploader : FileUploader, IUploadHandler
 
         bool isPublic = choice.Kind == ChoiceKind.Public;
         DateTime until = DateTime.Today.AddDays(choice.Days);
-        string note = isPublic ? "Публичная, до " + until.ToString("dd.MM.yyyy") : "Для команды, без срока";
+        string note = isPublic ? "Публичная, до " + until.ToString("dd.MM.yyyy")
+                    : choice.Kind == ChoiceKind.Everyone ? "Для всех в Nextcloud, без срока" : "Для команды, без срока";
         Action<double> progress = Toast.Progress(shot, "Загружаю в Nextcloud…", note);
 
         NextcloudClient nc = new(config, credential);
-        string folder = config.FolderFor(choice.Kind, shot.FileName);
+        UploadTarget target = config.TargetFor(choice.Kind, shot.FileName, credential.LoginName);
+        string folder = target.Folder;
         // Правила публичных ссылок читаются, пока идёт загрузка
         Task<PublicLinkRules>? rules = isPublic ? nc.GetPublicLinkRulesAsync(CancellationToken.None) : null;
         try
         {
-            string? fileId = await nc.UploadAsync(folder, shot.FileName, shot.Data, progress, CancellationToken.None).ConfigureAwait(false);
+            string? fileId = await nc.UploadAsync(target, shot.FileName, shot.Data, progress, CancellationToken.None).ConfigureAwait(false);
             string url;
             string? password = null;
             if (rules != null)

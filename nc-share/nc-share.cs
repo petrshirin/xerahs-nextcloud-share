@@ -1,5 +1,5 @@
 ﻿// nc-share — действие ShareX: снимок или запись экрана копируется в буфер или загружается в Nextcloud
-// со ссылкой для команды или публичной ссылкой со сроком. Оформление берётся из текущей темы ShareX.
+// со ссылкой для всех, для команды или публичной ссылкой со сроком. Оформление берётся из текущей темы ShareX.
 // Собирает и ставит install-windows.ps1 (компилятор C# из .NET Framework, C# 5). Настройки: nc-share.ini рядом с exe.
 using System;
 using System.Collections.Generic;
@@ -76,8 +76,9 @@ namespace NcShare
 
                     loader.Show(0);
                     Nextcloud nc = new Nextcloud(settings, credential);
-                    string folder = settings.FolderFor(choice.Kind, shot);
-                    string fileId = nc.Upload(folder, shot.FileName, shot.Data, loader.SetProgress);
+                    string root;
+                    string folder = settings.FolderFor(choice.Kind, shot, credential.User, out root);
+                    string fileId = nc.Upload(root, folder, shot.FileName, shot.Data, loader.SetProgress);
                     loader.SetProgress(-1);
 
                     string url, note;
@@ -93,7 +94,7 @@ namespace NcShare
                         url = fileId != null
                             ? settings.Server + "/index.php/f/" + fileId
                             : settings.Server + "/index.php/apps/files/?dir=" + Uri.EscapeDataString(folder);
-                        note = "Для команды, без срока";
+                        note = choice.Kind == ChoiceKind.Everyone ? "Для всех в Nextcloud, без срока" : "Для команды, без срока";
                     }
 
                     Clipboard.SetDataObject(url, true, 10, 50);
@@ -121,8 +122,13 @@ namespace NcShare
     sealed class Settings
     {
         public string Server = "";
+        // Папка команды: ссылка для команды и публичные ссылки
         public string BaseFolder = "";
-        // Путь внутри BaseFolder: {type} — папка по типу файла, {access} — по виду ссылки, %y и %mo — год и месяц
+        // Папка, доступная всем пользователям Nextcloud, — пункт «Ссылка для всех»; внутри у каждого подпапка с логином.
+        // Пусто — пункта в меню нет
+        public string EveryoneFolder = "";
+        // Путь внутри папки: {type} — папка по типу файла, {access} — по виду ссылки (в папке для всех её нет),
+        // %y и %mo — год и месяц
         public string PathTemplate = "{type}/{access}/%y/%mo";
         public string ImagesDir = "screenshots";
         public string VideosDir = "videos";
@@ -136,6 +142,14 @@ namespace NcShare
 
         // Без сервера и папки доступно только копирование в буфер
         public bool UploadReady { get { return Server.Length > 0 && BaseFolder.Length > 0 && BaseFolder.IndexOf('<') < 0; } }
+        public bool HasEveryoneFolder { get { return EveryoneFolder.Length > 0; } }
+        public bool EveryoneReady { get { return Server.Length > 0 && HasEveryoneFolder && EveryoneFolder.IndexOf('<') < 0; } }
+
+        static string FolderValue(string value)
+        {
+            string folder = value.Trim().TrimEnd('/');
+            return folder.Length > 0 && folder[0] != '/' ? "/" + folder : folder;
+        }
 
         public static Settings Load(string path)
         {
@@ -151,10 +165,8 @@ namespace NcShare
                 switch (line.Substring(0, eq).Trim().ToLowerInvariant())
                 {
                     case "server": s.Server = value.TrimEnd('/'); break;
-                    case "basefolder":
-                        s.BaseFolder = value.TrimEnd('/');
-                        if (s.BaseFolder.Length > 0 && s.BaseFolder[0] != '/') s.BaseFolder = "/" + s.BaseFolder;
-                        break;
+                    case "basefolder": s.BaseFolder = FolderValue(value); break;
+                    case "everyonefolder": s.EveryoneFolder = FolderValue(value); break;
                     case "pathtemplate": s.PathTemplate = value; break;
                     case "imagesdir": s.ImagesDir = value.Trim('/'); break;
                     case "videosdir": s.VideosDir = value.Trim('/'); break;
@@ -180,20 +192,31 @@ namespace NcShare
             return s;
         }
 
-        // Папка для загрузки, например BaseFolder/screenshots/team/2026/10 — так же, как у плагина для XerahS
-        public string FolderFor(ChoiceKind kind, Shot shot)
+        // Папка для загрузки — так же, как у плагина для XerahS: BaseFolder/screenshots/team/2026/10 или
+        // EveryoneFolder/<логин>/screenshots/2026/10. root — папка, выше которой nc-share не создаёт папок
+        public string FolderFor(ChoiceKind kind, Shot shot, string user, out string root)
         {
+            bool everyone = kind == ChoiceKind.Everyone;
             DateTime now = DateTime.Now;
             string inside = PathTemplate
                 .Replace("{type}", shot.IsImage ? ImagesDir : shot.IsVideo ? VideosDir : FilesDir)
-                .Replace("{access}", kind == ChoiceKind.Public ? PublicDir : TeamDir)
+                .Replace("{access}", everyone ? "" : kind == ChoiceKind.Public ? PublicDir : TeamDir)
                 .Replace("%y", now.ToString("yyyy", CultureInfo.InvariantCulture))
                 .Replace("%mo", now.ToString("MM", CultureInfo.InvariantCulture))
                 .Replace("%d", now.ToString("dd", CultureInfo.InvariantCulture));
-            StringBuilder folder = new StringBuilder(BaseFolder);
+            if (everyone) inside = SafeName(user) + "/" + inside;
+            root = everyone ? EveryoneFolder : BaseFolder;
+            StringBuilder folder = new StringBuilder(root);
             foreach (string part in inside.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries))
                 folder.Append('/').Append(part);
             return folder.ToString();
+        }
+
+        // Логин — имя папки: без разделителей пути
+        static string SafeName(string user)
+        {
+            string name = (user ?? "").Trim().Replace('/', '_').Replace('\\', '_');
+            return name.Length == 0 || name == "." || name == ".." ? "_" : name;
         }
 
         public static string DaysText(int n)
@@ -490,7 +513,8 @@ namespace NcShare
     }
 
     // --- Меню выбора в стиле меню ShareX ---
-    enum ChoiceKind { Clipboard, Team, Public }
+    // Everyone — ссылка для всех пользователей Nextcloud, Team — для тех, у кого есть доступ к папке команды
+    enum ChoiceKind { Clipboard, Everyone, Team, Public }
 
     sealed class Choice
     {
@@ -546,7 +570,10 @@ namespace NcShare
             AddItem(ItemKind.Caption, t.Px(24));
             AddSeparator();
             AddRow("\uE8C8", shot.CopiesAsImage ? "Скопировать изображение" : "Скопировать файл", new Choice { Kind = ChoiceKind.Clipboard }, true);
-            AddRow("\uE716", "Ссылка для команды", new Choice { Kind = ChoiceKind.Team }, settings.UploadReady);
+            // Без папки для всех пункта нет вовсе: номера остальных пунктов остаются прежними
+            if (settings.HasEveryoneFolder)
+                AddRow("\uE716", "Ссылка для всех", new Choice { Kind = ChoiceKind.Everyone }, settings.EveryoneReady);
+            AddRow(settings.HasEveryoneFolder ? "\uE72E" : "\uE716", "Ссылка для команды", new Choice { Kind = ChoiceKind.Team }, settings.UploadReady);
             AddSeparator();
             AddItem(ItemKind.Header, t.Px(22)).Text = "Публичная ссылка";
             foreach (int days in settings.PublicDays)
@@ -1188,13 +1215,13 @@ namespace NcShare
         }
 
         // Возвращает id файла для внутренней ссылки /index.php/f/<id> или null. progress — доля отправленного (0…1)
-        public string Upload(string folder, string fileName, byte[] data, Action<double> progress)
+        public string Upload(string root, string folder, string fileName, byte[] data, Action<double> progress)
         {
             string path = folder + "/" + fileName;
             Response r = Request("PUT", DavUrl(path), data, "application/octet-stream", auth, progress);
             if (r.Status == 409)   // папки ещё нет — создаём по уровням и повторяем
             {
-                CreateFolders(folder);
+                CreateFolders(root, folder);
                 r = Request("PUT", DavUrl(path), data, "application/octet-stream", auth, progress);
             }
             Check(r, "Загрузка файла");
@@ -1240,14 +1267,14 @@ namespace NcShare
             return string.IsNullOrEmpty(user) || string.IsNullOrEmpty(password) ? null : new Credential { User = user, Password = password };
         }
 
-        // Подпапки создаются от BaseFolder вниз. Если нет и самой BaseFolder, сначала она — от корня.
-        // Выше BaseFolder без нужды не ходим: там может не быть права записи
-        void CreateFolders(string folder)
+        // Подпапки создаются от папки из настроек (BaseFolder или EveryoneFolder) вниз. Если нет и её самой, сначала она —
+        // от корня. Выше неё без нужды не ходим: там может не быть права записи
+        void CreateFolders(string root, string folder)
         {
-            string inside = folder.Substring(settings.BaseFolder.Length);
-            if (CreateLevels(settings.BaseFolder, inside)) return;
-            CreateLevels("", settings.BaseFolder);
-            CreateLevels(settings.BaseFolder, inside);
+            string inside = folder.Substring(root.Length);
+            if (CreateLevels(root, inside)) return;
+            CreateLevels("", root);
+            CreateLevels(root, inside);
         }
 
         // MKCOL по уровням; 405 — папка уже есть. false — нет родительской папки (409 на первом уровне)
@@ -1363,8 +1390,8 @@ namespace NcShare
                     hint = "Пароль приложения не подходит — при следующей загрузке nc-share попросит войти заново.";
                     break;
                 case 403: hint = "Нет прав в папке (нужны запись и, для публичных ссылок, право делиться) или публичные ссылки запрещены на сервере."; break;
-                case 404: hint = "Не найден путь — проверьте Server и BaseFolder в nc-share.ini или запустите установщик ещё раз."; break;
-                case 409: hint = "Не удалось создать папку — проверьте BaseFolder в nc-share.ini."; break;
+                case 404: hint = "Не найден путь — проверьте Server, BaseFolder и EveryoneFolder в nc-share.ini или запустите установщик ещё раз."; break;
+                case 409: hint = "Не удалось создать папку — проверьте BaseFolder и EveryoneFolder в nc-share.ini."; break;
                 default: hint = r.Body.Length > 500 ? r.Body.Substring(0, 500) : r.Body; break;
             }
             throw new NcException(action + " — HTTP " + r.Status + "\n" + hint);
