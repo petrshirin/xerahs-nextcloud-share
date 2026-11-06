@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
@@ -21,6 +22,10 @@ public sealed class NcException : Exception
 public sealed record Credential(string LoginName, string AppPassword);
 
 public sealed record LoginFlow(string LoginUrl, string PollEndpoint, string PollToken);
+
+// Правила сервера для публичных ссылок: обязателен ли пароль, наибольший срок (если он обязателен),
+// есть ли генератор паролей по политике сервера (приложение password_policy)
+public sealed record PublicLinkRules(bool PasswordRequired, int? MaxDays, bool HasPasswordGenerator);
 
 // Nextcloud: WebDAV для загрузки, OCS API для публичных ссылок, Login Flow v2 для входа через браузер
 public sealed class NextcloudClient
@@ -82,7 +87,45 @@ public sealed class NextcloudClient
         return m.Success ? long.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture) : null;
     }
 
-    public async Task<string> CreatePublicLinkAsync(string path, DateTime until, CancellationToken cancel)
+    // Правила считаются для вошедшего пользователя: группы, исключённые админом из обязательного пароля,
+    // получают password.enforced = false
+    public async Task<PublicLinkRules> GetPublicLinkRulesAsync(CancellationToken cancel)
+    {
+        Response r = await SendAsync(HttpMethod.Get, config.Server + "/ocs/v2.php/cloud/capabilities?format=json", null, cancel).ConfigureAwait(false);
+        Check(r, "Настройки общего доступа");
+        JToken? caps = JObject.Parse(r.Body)["ocs"]?["data"]?["capabilities"];
+        JToken? link = caps?["files_sharing"]?["public"];
+        JToken? expire = link?["expire_date"];
+        return new PublicLinkRules(
+            link?["password"]?["enforced"]?.Value<bool?>() == true,
+            expire?["enforced"]?.Value<bool?>() == true ? expire["days"]?.Value<int?>() : null,
+            caps?["password_policy"]?["api"]?["generate"] != null);
+    }
+
+    // Пароль, который пройдёт политику сервера (длина, утёкшие пароли). Генератор берётся с нашего же сервера:
+    // адрес из ответа сервера не используем, чтобы не отправить вход на другой хост
+    public async Task<string> GeneratePasswordAsync(PublicLinkRules rules, CancellationToken cancel)
+    {
+        if (rules.HasPasswordGenerator)
+        {
+            try
+            {
+                Response r = await SendAsync(HttpMethod.Get, config.Server + "/ocs/v2.php/apps/password_policy/api/v1/generate?format=json",
+                    null, cancel).ConfigureAwait(false);
+                string? password = (int)r.Status < 400 ? JObject.Parse(r.Body)["ocs"]?["data"]?["password"]?.Value<string>() : null;
+                if (!string.IsNullOrEmpty(password)) return password;
+                DebugHelper.WriteLine($"[nc-share] генератор паролей сервера ответил HTTP {(int)r.Status}, пароль создаю сам");
+            }
+            catch (Exception ex) when (ex is NcException or Newtonsoft.Json.JsonException)
+            {
+                DebugHelper.WriteLine($"[nc-share] генератор паролей сервера недоступен ({ex.Message}), пароль создаю сам");
+            }
+        }
+        // 20 символов без похожих (0/O, 1/l/I): длиннее минимума любой разумной политики
+        return new string(RandomNumberGenerator.GetItems<char>("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789", 20));
+    }
+
+    public async Task<string> CreatePublicLinkAsync(string path, DateTime until, string? password, CancellationToken cancel)
     {
         Dictionary<string, string> form = new()
         {
@@ -91,6 +134,7 @@ public sealed class NextcloudClient
             ["permissions"] = "1",
             ["expireDate"] = until.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
         };
+        if (password != null) form["password"] = password;
         Response r = await SendAsync(HttpMethod.Post, config.Server + "/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json",
             () => new FormUrlEncodedContent(form), cancel).ConfigureAwait(false);
         Check(r, "Создание публичной ссылки");
@@ -177,7 +221,23 @@ public sealed class NextcloudClient
             HttpStatusCode.Conflict => "Не удалось создать папку — проверьте BaseFolder в настройках nc-share.",
             _ => r.Body.Length > 300 ? r.Body.Substring(0, 300) : r.Body
         };
+        // На отказ (400, 403) сервер обычно объясняет причину сам, на языке пользователя — это точнее подсказки
+        if (r.Status is HttpStatusCode.BadRequest or HttpStatusCode.Forbidden && ServerMessage(r.Body) is string message)
+            hint = message;
         throw new NcException($"{action} — HTTP {(int)r.Status}\n{hint}") { Unauthorized = r.Status == HttpStatusCode.Unauthorized };
+    }
+
+    // Текст ошибки от сервера: OCS — ocs.meta.message, WebDAV — <s:message>
+    static string? ServerMessage(string body)
+    {
+        string? message = null;
+        try { message = JObject.Parse(body)["ocs"]?["meta"]?["message"]?.Value<string>(); }
+        catch (Newtonsoft.Json.JsonException)
+        {
+            Match m = Regex.Match(body, @"<s:message>(.*?)</s:message>", RegexOptions.Singleline);
+            if (m.Success) message = WebUtility.HtmlDecode(m.Groups[1].Value);
+        }
+        return string.IsNullOrWhiteSpace(message) ? null : message.Trim();
     }
 
     // --- Вход через браузер (Login Flow v2): пароль приложения создаётся сам, SSO проходит в браузере ---

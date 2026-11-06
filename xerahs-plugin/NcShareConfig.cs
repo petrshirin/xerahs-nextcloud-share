@@ -27,9 +27,6 @@ public sealed class NcShareConfig
     public string TeamDir { get; set; } = "team";
     public string PublicDir { get; set; } = "public";
 
-    // Обход ошибки XerahS #298: исправлять цвета снимков после редактора (работает только на версиях XerahS с ошибкой)
-    public bool FixEditorColors { get; set; } = true;
-
     // Сроки публичной ссылки в днях — по пункту меню на каждый
     public string PublicDays { get; set; } = "1, 7, 30";
 

@@ -14,9 +14,9 @@ permissions:
 
 env:
   # Версия XerahS, с которой проверен плагин; та же, что в install-macos.sh
-  XERAHS_VERSION: 0.31.4
+  XERAHS_VERSION: 0.33.6
   XERAHS_REPO: ShareX/XerahS
-  XERAHS_SHA256: 25d38773c83926d2fd55597f9fb63bed832d3f3954502484dd76af729e96810c
+  XERAHS_SHA256: c06ed75a8a51cc1b45a2dc861408c544a37e5876ce69f6e4fda5647907a654af
 
 jobs:
   plugin:

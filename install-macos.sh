@@ -16,12 +16,11 @@
 set -euo pipefail
 
 REPO="${NCSHARE_REPO:-petrshirin/xerahs-nextcloud-share}"
-# XerahS, с которым проверен и собран плагин. Исправления #297 и #298 есть в сборке KovaForge 0.33.3, но она
-# на macOS падает при запуске (меню в строке меню), поэтому пока 0.31.4 — их обходит сам плагин
-XERAHS_VERSION=0.31.4
+# XerahS, с которым проверен и собран плагин
+XERAHS_VERSION=0.33.6
 XERAHS_URL="https://github.com/ShareX/XerahS/releases/download/v$XERAHS_VERSION"
-XERAHS_SHA256_arm64=25d38773c83926d2fd55597f9fb63bed832d3f3954502484dd76af729e96810c
-XERAHS_SHA256_x64=3038f00b686ef1474d554f6a5c5234f994824061b3503397ab93b18a3fba84a7
+XERAHS_SHA256_arm64=c06ed75a8a51cc1b45a2dc861408c544a37e5876ce69f6e4fda5647907a654af
+XERAHS_SHA256_x64=2d450078e3c51a870ff1cc414cee7c7b061a6b92cd49a4e7d1f3d72e3164dfe0
 
 APP=/Applications/XerahS.app
 DATA="$HOME/Documents/XerahS"
@@ -29,6 +28,7 @@ SETTINGS="$DATA/Settings"
 PLUGIN_DIR="$DATA/Plugins/macos64/ncshare"
 BACKUP="$DATA/nc-share-backup/$(date +%Y-%m-%d_%H%M%S)"
 ACTIVATE=/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 title() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
@@ -217,12 +217,6 @@ function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, rem
         }
     }
     for (const job of Object.keys(CAPTURE)) if (!done.includes(job)) out.push("ВНИМАНИЕ: нет сценария " + job);
-    // Сценарий OCR (Shift+PrintScreen) добавляет мастер первого запуска XerahS, к nc-share он не относится
-    const ocr = wf.Hotkeys.filter(h => h.TaskSettings && h.TaskSettings.Job === "OCR");
-    if (ocr.length) {
-        wf.Hotkeys = wf.Hotkeys.filter(h => !ocr.includes(h));
-        out.push("убран сценарий OCR");
-    }
 
     // «Start minimized to tray»: на macOS XerahS тогда живёт только в строке меню — без окна при запуске и
     // без значка в Dock. Значок в строке меню нужен, иначе программу не видно совсем
@@ -230,9 +224,6 @@ function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, rem
     if (app) {
         app.ShowTray = true;
         app.SilentRun = true;
-        // Мастер первого запуска переносит снимки в выбранную в нём папку — возвращаем папку XerahS по умолчанию
-        app.UseCustomScreenshotsPath = false;
-        app.CustomScreenshotsPath = "";
         // Assistant (Ctrl+Shift+Space) к снимкам не относится, а сочетание занимает
         app.AssistantEnabled = false;
     }
@@ -242,8 +233,7 @@ function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, rem
     out.push("сценарии: весь экран, область, активное окно → редактор → nc-share");
     if (app) {
         writeJson(appPath, app);
-        out.push("XerahS запускается свёрнутым: только значок в строке меню");
-        out.push("снимки сохраняются в ~/Documents/XerahS/Screenshots, Assistant выключен");
+        out.push("XerahS запускается свёрнутым: только значок в строке меню; Assistant выключен");
     } else out.push("ВНИМАНИЕ: нет " + appPath);
     return out.join("\n");
 }
@@ -305,6 +295,11 @@ else
         fail "Нет прав на запись в /Applications."
     fi
     xattr -cr "$APP"   # XerahS не подписан: без этого macOS считает программу повреждённой
+    # Подпись XerahS без сертификата разработчика, и macOS помнит разрешение на запись экрана для прежней сборки:
+    # переключатель в настройках включён, а новой сборке снимать нельзя. Сброс — и при первом снимке macOS спросит снова.
+    # tccutil ищет программу по bundle id через LaunchServices, поэтому сначала регистрируем новую сборку
+    "$LSREGISTER" -f "$APP" >/dev/null 2>&1 || true
+    tccutil reset ScreenCapture com.xerahs.app >/dev/null 2>&1 || warn "Не удалось сбросить разрешение на запись экрана (tccutil)."
     if [ -n "$have" ]; then fresh=2; info "Обновлён до $XERAHS_VERSION."; else fresh=1; info "Установлен в $APP."; fi
 fi
 
@@ -433,14 +428,11 @@ info "После снимка — редактор, затем меню: 1 — �
 info "При первой загрузке откроется браузер: войди в Nextcloud и подтверди доступ."
 if [ "$fresh" != 0 ]; then
     info ""
-    if [ "$fresh" = 1 ]; then
-        warn "Разреши XerahS запись экрана: в открывшихся настройках включи XerahS. macOS перезапустит программу."
-    else
-        # Подпись XerahS без сертификата разработчика, и разрешение macOS привязано к конкретной сборке
-        warn "XerahS обновлён. Если на снимках только обои — в открывшихся настройках выключи и снова включи XerahS."
-    fi
-    open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" || true
+    # XerahS просит разрешение сам, при первом снимке, — до этого его нет в списке настроек
+    warn "Сделай первый снимок (Cmd+Shift+3): macOS спросит разрешение на запись экрана."
+    warn "Включи XerahS в открывшихся настройках и согласись перезапустить программу."
 fi
+info "Нет значка XerahS в строке меню? Если стоит менеджер строки меню (Bartender, Ice, Thaw), перезапусти его."
 info ""
 info "Вернуть как было:"
 info "  pkill -x XerahS; cp -R \"$BACKUP/Settings/\" \"$SETTINGS/\"; rm -rf \"$PLUGIN_DIR\""

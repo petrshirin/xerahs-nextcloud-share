@@ -47,7 +47,7 @@ public sealed class NcShareUploader : FileUploader, IUploadHandler
         if (Runs.TryGetValue(fileName, out Task<UploadOutcome>? known)) return known;
         // Скрытые файлы — временные (так пишут некоторые программы): их не трогаем
         if (fileName.StartsWith('.')) return Task.FromResult(NothingUploaded);
-        Shot shot = Shot.Read(stream, fileName, config, fromCapture);
+        Shot shot = Shot.Read(stream, fileName, fromCapture);
         return Runs.GetOrAdd(fileName, _ => ProcessAsync(shot));
     }
 
@@ -108,18 +108,39 @@ public sealed class NcShareUploader : FileUploader, IUploadHandler
 
         NextcloudClient nc = new(config, credential);
         string folder = config.FolderFor(choice.Kind, shot.FileName);
+        // Правила публичных ссылок читаются, пока идёт загрузка
+        Task<PublicLinkRules>? rules = isPublic ? nc.GetPublicLinkRulesAsync(CancellationToken.None) : null;
         try
         {
             string? fileId = await nc.UploadAsync(folder, shot.FileName, shot.Data, progress, CancellationToken.None).ConfigureAwait(false);
-            string url = isPublic
-                ? await nc.CreatePublicLinkAsync(folder + "/" + shot.FileName, until, CancellationToken.None).ConfigureAwait(false)
-                  + (shot.IsImage ? config.PublicLinkSuffix : config.FilePublicLinkSuffix)
-                // Без index.php сервер отдаёт 404
-                : fileId != null ? config.Server + "/index.php/f/" + fileId
-                                 : config.Server + "/index.php/apps/files/?dir=" + Uri.EscapeDataString(folder);
-            DebugHelper.WriteLine($"[nc-share] загружено: {folder}/{shot.FileName} → {url}");
-            Toast.Post(shot, "Ссылка скопирована", note, url);
-            return url;
+            string url;
+            string? password = null;
+            if (rules != null)
+            {
+                PublicLinkRules r = await rules.ConfigureAwait(false);
+                // Сервер с обязательным сроком не даст ссылку дольше своего предела
+                if (r.MaxDays is int max && max > 0 && until > DateTime.Today.AddDays(max))
+                {
+                    until = DateTime.Today.AddDays(max);
+                    note = "Публичная, до " + until.ToString("dd.MM.yyyy") + " — дольше сервер не разрешает";
+                }
+                if (r.PasswordRequired) password = await nc.GeneratePasswordAsync(r, CancellationToken.None).ConfigureAwait(false);
+                url = await nc.CreatePublicLinkAsync(folder + "/" + shot.FileName, until, password, CancellationToken.None).ConfigureAwait(false);
+                // Ссылка с паролем — без хвоста: /s/<token>/preview до ввода пароля отвечает 404, а /s/<token> спрашивает пароль
+                if (password == null) url += shot.IsImage ? config.PublicLinkSuffix : config.FilePublicLinkSuffix;
+            }
+            // Без index.php сервер отдаёт 404
+            else url = fileId != null ? config.Server + "/index.php/f/" + fileId
+                                      : config.Server + "/index.php/apps/files/?dir=" + Uri.EscapeDataString(folder);
+            DebugHelper.WriteLine($"[nc-share] загружено: {folder}/{shot.FileName} → {url}{(password != null ? ", с паролем" : "")}");
+            if (password == null)
+            {
+                Toast.Post(shot, "Ссылка скопирована", note, url);
+                return url;
+            }
+            // Сервер требует пароль: ссылка без него не откроется, поэтому в буфер — обе строки сразу
+            Toast.Post(shot, "Ссылка и пароль скопированы", "Пароль: " + password + " · " + note.ToLowerInvariant(), url);
+            return url + "\nПароль: " + password;
         }
         catch (NcException ex) when (ex.Unauthorized)
         {
@@ -159,23 +180,11 @@ public sealed class Shot
     public bool FromCapture { get; init; }
     public bool IsImage => NcShareConfig.IsImage(FileName);
 
-    public static Shot Read(Stream stream, string fileName, NcShareConfig config, bool fromCapture)
+    public static Shot Read(Stream stream, string fileName, bool fromCapture)
     {
         using MemoryStream copy = new();
         stream.CopyTo(copy);
-        byte[] data = copy.ToArray();
-        string? path = (stream as FileStream)?.Name;
-        if (fromCapture && config.FixEditorColors && EditorColorFix.Applies(data))
-        {
-            try
-            {
-                data = EditorColorFix.SwapRedBlue(data);
-                EditorColorFix.RewriteSaved(path, data);
-                DebugHelper.WriteLine($"[nc-share] цвета исправлены (снимок из редактора, XerahS #298): {fileName}");
-            }
-            catch (Exception ex) { DebugHelper.WriteException(ex, "[nc-share] не удалось исправить цвета"); }
-        }
-        return new Shot { FileName = fileName, Data = data, FilePath = path, FromCapture = fromCapture };
+        return new Shot { FileName = fileName, Data = copy.ToArray(), FilePath = (stream as FileStream)?.Name, FromCapture = fromCapture };
     }
 
     // Bitmap создаётся в потоке интерфейса, там же, где его рисуют. У видео и прочих файлов миниатюры нет

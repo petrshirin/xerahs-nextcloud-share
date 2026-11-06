@@ -11,7 +11,7 @@ public sealed class NcShareProvider : UploaderProviderBase
     public override string ProviderId => "ncshare";
     public override string Name => "nc-share";
     public override string Description => "Меню после снимка: буфер, ссылка для команды или публичная ссылка со сроком (Nextcloud)";
-    public override Version Version => new(0, 5, 1);
+    public override Version Version => new(0, 6, 0);
     // Image — снимки XerahS, File — файлы из папки, за которой следит XerahS (записи и снимки системной панели Cmd+Shift+5)
     public override UploaderCategory[] SupportedCategories => new[] { UploaderCategory.Image, UploaderCategory.File };
     public override Type ConfigModelType => typeof(NcShareConfig);
