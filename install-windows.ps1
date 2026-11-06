@@ -3,7 +3,7 @@
 #
 # Ставит ShareX (если его нет), собирает nc-share.exe компилятором C# из Windows и настраивает ShareX: снимок →
 # редактор → меню nc-share, запись видео → меню nc-share. Перед правкой настройки ShareX копируются в
-# <папка ShareX>\nc-share-backup\<дата>. Повторный запуск обновляет nc-share; сервер и папка Nextcloud сохраняются,
+# <папка ShareX>\nc-share-backup\<дата>. Повторный запуск обновляет nc-share; сервер и папки Nextcloud сохраняются,
 # если их не поменять.
 #
 # Файл — без BOM: irm | iex выполняет его как текст, и BOM в начале стал бы ошибкой. Запуск из файла в Windows
@@ -13,7 +13,10 @@
 #   NCSHARE_REPO         репозиторий GitHub «владелец/имя», откуда берутся исходники nc-share
 #   NCSHARE_REF          ветка или тег в нём, по умолчанию main
 #   NCSHARE_SRC          своя папка с nc-share.cs и nc-share.ini вместо скачивания
-#   NCSHARE_BASE_FOLDER  папка в Nextcloud: адрес из браузера (заодно задаёт сервер) или путь /Папка
+#   NCSHARE_BASE_FOLDER  папка команды в Nextcloud: адрес из браузера (заодно задаёт сервер) или путь /Папка.
+#                        Если задана, папка для всех не спрашивается: остаётся прежней или берётся из переменной ниже
+#   NCSHARE_EVERYONE_FOLDER  папка, доступная всем пользователям Nextcloud (пункт «Ссылка для всех»): адрес или путь;
+#                        «-» — убрать пункт
 #   NCSHARE_SERVER       адрес Nextcloud, если папка задана путём, например https://cloud.example.com
 #   NCSHARE_SHAREX_DIR   папка настроек ShareX, если не находится сама (обычно Документы\ShareX)
 #   NCSHARE_TEST         1 — проверка на копии настроек: ShareX не ставится, не закрывается и не запускается,
@@ -351,9 +354,10 @@ try {
         if (-not $server) { $server = Get-FolderServer $env:NCSHARE_BASE_FOLDER }
     }
     else {
-        if ($curServer -and $curFolder) { Info "Сейчас: папка $curFolder на $curServer" }
+        Info 'Папка команды — для ссылки «для команды» (её откроют те, у кого есть доступ к папке) и публичных ссылок.'
+        if ($curServer -and $curFolder) { Info "Сейчас: $curFolder на $curServer" }
         else {
-            Info 'Открой в браузере папку Nextcloud, куда класть снимки, и скопируй адрес из адресной строки.'
+            Info 'Открой эту папку в браузере и скопируй адрес из адресной строки.'
             Info 'Или введи путь, например /Screenshots: папки, которых нет, создадутся при первой загрузке.'
         }
         Warn 'Внутри выбранной папки nc-share создаст папки screenshots\ и videos\ и будет класть файлы туда.'
@@ -384,7 +388,36 @@ try {
         Warn "$server не отвечает как Nextcloud ($server/status.php). Проверь адрес, VPN и сеть."
         if ((Ask 'Всё равно продолжить? [y/N] ') -notmatch '^[yYдД]') { Fail "Сервер Nextcloud недоступен: $server" }
     }
-    Info "Папка: $folder"
+    # Папка для всех — пункт «Ссылка для всех». Необязательна: без неё меню прежнее
+    $curEveryone = ConvertTo-Folder $ini['everyonefolder']
+    $everyone = $curEveryone
+    if ($env:NCSHARE_EVERYONE_FOLDER) {
+        if ($env:NCSHARE_EVERYONE_FOLDER.Trim() -eq '-') { $everyone = '' }
+        else {
+            $everyone = ConvertTo-Folder $env:NCSHARE_EVERYONE_FOLDER
+            if (-not $everyone) { Fail "Не понял, какая это папка: «$env:NCSHARE_EVERYONE_FOLDER»." }
+        }
+    }
+    elseif (-not $env:NCSHARE_BASE_FOLDER) {
+        Write-Host ''
+        Info 'Папка для всех — общая папка, которую видят все пользователи Nextcloud: пункт меню «Ссылка для всех».'
+        Info 'Внутри nc-share заведёт подпапку с твоим логином. Если такой папки на сервере нет — пропусти.'
+        if ($curEveryone) { Info "Сейчас: $curEveryone" }
+        for ($i = 0; $i -lt 3; $i++) {
+            $reply = if ($curEveryone) { Ask 'Enter — оставить, «-» — убрать, или адрес другой папки: ' } else { Ask 'Адрес папки для всех (Enter — пропустить): ' }
+            if (-not $reply) { break }
+            if ($reply.Trim() -eq '-') { $everyone = ''; break }
+            $candidate = ConvertTo-Folder $reply
+            $evServer = Get-FolderServer $reply
+            if (-not $candidate) { Warn 'Не понял. Нужен адрес вида https://cloud.example.com/apps/files/…?dir=/Shared или путь /Shared.' }
+            elseif ($evServer -and (ConvertTo-Server $evServer) -ne $server) { Warn "Эта папка на другом сервере ($evServer), а nc-share работает с одним: $server." }
+            elseif ($candidate -eq $folder) { Warn 'Это папка команды. Нужна другая — та, что доступна всем.' }
+            else { $everyone = $candidate; break }
+        }
+    }
+    Write-Host ''
+    Info "Папка команды: $folder"
+    if ($everyone) { Info "Папка для всех: $everyone" } else { Info 'Папка для всех не задана — пункта «Ссылка для всех» в меню не будет.' }
 
     Title '4/5. Настройка'
     if (-not $Test -and (Stop-ShareX)) { Info 'ShareX закрыт на время настройки' }
@@ -405,6 +438,7 @@ try {
     foreach ($old in 'install.ps1', 'nc-share.cs') { Remove-Item (Join-Path $tools $old) -ErrorAction SilentlyContinue }
     $ini['server'] = $server
     $ini['basefolder'] = $folder
+    $ini['everyonefolder'] = $everyone
     Write-Ini (Join-Path $src 'nc-share.ini') (Join-Path $tools 'nc-share.ini') $ini
     $ini = Read-Ini (Join-Path $tools 'nc-share.ini')
     Info "nc-share установлен в $tools"
@@ -465,8 +499,10 @@ try {
     foreach ($o in $ours | Where-Object { $_.Video }) { Info "$($o.Keys) — $($JobNames[$o.Job]); то же сочетание — стоп" }
     $days = @("$($ini['publicdays'])" -split '[,;\s]+' | Where-Object { $_ })
     if (-not $days) { $days = '1', '7', '30' }
-    $publicKeys = if ($days.Count -gt 1) { "3–$($days.Count + 2)" } else { '3' }
-    Info "После снимка — редактор (Enter — дальше), затем меню: 1 — скопировать, 2 — ссылка для команды,"
+    $first = if ($everyone) { 4 } else { 3 }
+    $publicKeys = if ($days.Count -gt 1) { "$first–$($days.Count + $first - 1)" } else { "$first" }
+    if ($everyone) { Info 'После снимка — редактор (Enter — дальше), затем меню: 1 — скопировать, 2 — ссылка для всех, 3 — для команды,' }
+    else { Info 'После снимка — редактор (Enter — дальше), затем меню: 1 — скопировать, 2 — ссылка для команды,' }
     Info "$publicKeys — публичная ссылка на $($days -join ', ') дн. После записи видео меню появляется сразу."
     Info 'При первой загрузке откроется браузер: войди в Nextcloud и подтверди доступ.'
     $shots = if ($app.UseCustomScreenshotsPath -and $app.CustomScreenshotsPath) { $app.CustomScreenshotsPath } else { Join-Path $data 'Screenshots' }

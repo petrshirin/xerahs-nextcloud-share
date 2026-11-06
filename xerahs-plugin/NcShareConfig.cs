@@ -14,12 +14,16 @@ public sealed class NcShareConfig
     // Адрес Nextcloud, например https://cloud.example.com (если Nextcloud стоит в подкаталоге — вместе с ним)
     public string ServerUrl { get; set; } = "";
 
-    // Папка в Nextcloud, куда класть файлы; если её нет, создаётся при первой загрузке.
-    // Пока не заданы сервер и папка, доступно только копирование в буфер
+    // Папка команды: сюда ложатся файлы для ссылки «для команды» и публичных ссылок; если её нет, создаётся при первой
+    // загрузке. Ссылку для команды откроют те, у кого есть доступ к папке. Пока не заданы сервер и папка, этих пунктов нет
     public string BaseFolder { get; set; } = "";
 
-    // Путь внутри BaseFolder. Сначала тип файла, потом доступ — тип постоянен, а виды доступа могут поменяться.
-    // {type} — папка по типу файла, {access} — папка по виду ссылки, %y/%mo — год и месяц (шаблон XerahS)
+    // Папка, доступная всем пользователям Nextcloud, — пункт «Ссылка для всех». Внутри неё у каждого своя подпапка
+    // с логином: файлы коллег не смешиваются и не перезаписываются. Пусто — пункта в меню нет
+    public string EveryoneFolder { get; set; } = "";
+
+    // Путь внутри папки. Сначала тип файла, потом доступ — тип постоянен, а виды доступа могут поменяться.
+    // {type} — папка по типу файла, {access} — папка по виду ссылки (в папке для всех её нет), %y/%mo — год и месяц
     public string PathTemplate { get; set; } = "{type}/{access}/%y/%mo";
     public string ImagesDir { get; set; } = "screenshots";
     public string VideosDir { get; set; } = "videos";
@@ -46,6 +50,12 @@ public sealed class NcShareConfig
     public bool UploadReady => Server.Length > 0 && BaseFolder.Trim().Length > 0;
 
     [JsonIgnore]
+    public bool HasEveryoneFolder => EveryoneFolder.Trim().Length > 0;
+
+    [JsonIgnore]
+    public bool EveryoneReady => Server.Length > 0 && HasEveryoneFolder;
+
+    [JsonIgnore]
     public int[] Days
     {
         get
@@ -57,13 +67,26 @@ public sealed class NcShareConfig
         }
     }
 
-    // Папка для загрузки, например BaseFolder/screenshots/team/2026/10
-    public string FolderFor(ChoiceKind kind, string fileName)
+    // Куда загружать: BaseFolder/screenshots/team/2026/10 или EveryoneFolder/<логин>/screenshots/2026/10.
+    // Root — папка, выше которой плагин не создаёт папок: её дал администратор или выбрал пользователь
+    public UploadTarget TargetFor(ChoiceKind kind, string fileName, string login)
     {
-        string access = kind == ChoiceKind.Public ? PublicDir : TeamDir;
+        bool everyone = kind == ChoiceKind.Everyone;
+        string root = Normalize(everyone ? EveryoneFolder : BaseFolder);
+        string access = everyone ? "" : kind == ChoiceKind.Public ? PublicDir : TeamDir;
         string path = PathTemplate.Replace("{type}", TypeDirFor(fileName).Trim('/')).Replace("{access}", access.Trim('/'));
         path = NameParser.Parse(NameParserType.Default, path);
-        return string.Join("/", new[] { BaseFolder.Trim().TrimEnd('/') }.Concat(path.Split('/', StringSplitOptions.RemoveEmptyEntries)));
+        if (everyone) path = SafeName(login) + "/" + path;
+        return new UploadTarget(root, string.Join("/", new[] { root }.Concat(path.Split('/', StringSplitOptions.RemoveEmptyEntries))));
+    }
+
+    static string Normalize(string folder) => "/" + folder.Trim().Trim('/');
+
+    // Логин — имя папки: без разделителей пути
+    static string SafeName(string login)
+    {
+        string name = login.Trim().Replace('/', '_').Replace('\\', '_');
+        return name.Length == 0 || name == "." || name == ".." ? "_" : name;
     }
 
     static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".heic" };
@@ -78,3 +101,6 @@ public sealed class NcShareConfig
         return ImageExtensions.Contains(ext) ? ImagesDir : VideoExtensions.Contains(ext) ? VideosDir : FilesDir;
     }
 }
+
+// Folder — куда класть файл, Root — граница, выше которой папки не создаются
+public sealed record UploadTarget(string Root, string Folder);

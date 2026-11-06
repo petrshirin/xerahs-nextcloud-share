@@ -70,15 +70,15 @@ public sealed class NextcloudClient
     }
 
     // Возвращает id файла для внутренней ссылки /index.php/f/<id> или null. progress — доля отправленного (0…1)
-    public async Task<string?> UploadAsync(string folder, string fileName, byte[] data, Action<double> progress, CancellationToken cancel)
+    public async Task<string?> UploadAsync(UploadTarget target, string fileName, byte[] data, Action<double> progress, CancellationToken cancel)
     {
-        string path = folder + "/" + fileName;
+        string path = target.Folder + "/" + fileName;
         // Видео бывают большими: на файл даём минуту плюс секунду на каждые 100 КБ
         TimeSpan timeout = TimeSpan.FromSeconds(60 + data.Length / 100_000);
         Response r = await SendAsync(HttpMethod.Put, DavUrl(path), () => new ProgressContent(data, progress), cancel, timeout).ConfigureAwait(false);
         if (r.Status == HttpStatusCode.Conflict)   // папки ещё нет — создаём по уровням и повторяем
         {
-            await CreateFoldersAsync(folder, cancel).ConfigureAwait(false);
+            await CreateFoldersAsync(target, cancel).ConfigureAwait(false);
             r = await SendAsync(HttpMethod.Put, DavUrl(path), () => new ProgressContent(data, progress), cancel, timeout).ConfigureAwait(false);
         }
         Check(r, "Загрузка файла");
@@ -147,15 +147,15 @@ public sealed class NextcloudClient
         return url;
     }
 
-    // Подпапки создаются от BaseFolder вниз. Если нет и самой BaseFolder, сначала она — от корня.
-    // Выше BaseFolder без нужды не ходим: там может не быть права записи
-    async Task CreateFoldersAsync(string folder, CancellationToken cancel)
+    // Подпапки создаются от папки из настроек (BaseFolder или EveryoneFolder) вниз. Если нет и её самой, сначала она —
+    // от корня. Выше неё без нужды не ходим: там может не быть права записи
+    async Task CreateFoldersAsync(UploadTarget target, CancellationToken cancel)
     {
-        string base_ = config.BaseFolder.Trim().TrimEnd('/');
-        string inside = folder.Substring(base_.Length);
-        if (await CreateLevelsAsync(base_, inside, cancel).ConfigureAwait(false)) return;
-        await CreateLevelsAsync("", base_, cancel).ConfigureAwait(false);
-        await CreateLevelsAsync(base_, inside, cancel).ConfigureAwait(false);
+        string root = target.Root.TrimEnd('/');
+        string inside = target.Folder.Substring(root.Length);
+        if (await CreateLevelsAsync(root, inside, cancel).ConfigureAwait(false)) return;
+        await CreateLevelsAsync("", root, cancel).ConfigureAwait(false);
+        await CreateLevelsAsync(root, inside, cancel).ConfigureAwait(false);
     }
 
     // MKCOL по уровням; 405 — папка уже есть. false — нет родительской папки (409 на первом уровне)
@@ -217,8 +217,8 @@ public sealed class NextcloudClient
         {
             HttpStatusCode.Unauthorized => "Пароль приложения не подходит — при следующей загрузке nc-share попросит войти заново.",
             HttpStatusCode.Forbidden => "Нет прав в папке (нужны запись и, для публичных ссылок, право делиться) или публичные ссылки запрещены на сервере.",
-            HttpStatusCode.NotFound => "Не найден путь — проверьте адрес сервера и папку (BaseFolder) в настройках nc-share.",
-            HttpStatusCode.Conflict => "Не удалось создать папку — проверьте BaseFolder в настройках nc-share.",
+            HttpStatusCode.NotFound => "Не найден путь — проверьте адрес сервера и папки (BaseFolder, EveryoneFolder) в настройках nc-share.",
+            HttpStatusCode.Conflict => "Не удалось создать папку — проверьте папки (BaseFolder, EveryoneFolder) в настройках nc-share.",
             _ => r.Body.Length > 300 ? r.Body.Substring(0, 300) : r.Body
         };
         // На отказ (400, 403) сервер обычно объясняет причину сам, на языке пользователя — это точнее подсказки
