@@ -4,13 +4,16 @@
 #
 # Ставит XerahS (если его нет) и плагин nc-share из последнего релиза, отдаёт XerahS сочетания Cmd+Shift+3/4
 # и настраивает сценарии: снимок → редактор → меню nc-share. Перед правкой настройки XerahS и сочетания macOS
-# копируются в ~/Documents/XerahS/nc-share-backup/<дата>. Повторный запуск обновляет плагин; сервер и папка
+# копируются в ~/Documents/XerahS/nc-share-backup/<дата>. Повторный запуск обновляет плагин; сервер и папки
 # Nextcloud сохраняются, если их не поменять.
 #
 # Переменные — для проверки и установки без вопросов:
 #   NCSHARE_REPO          репозиторий GitHub «владелец/имя», из релизов которого берётся плагин
 #   NCSHARE_ZIP           свой архив плагина вместо скачивания (собирает xerahs-plugin/pack.sh)
-#   NCSHARE_BASE_FOLDER   папка в Nextcloud: адрес из браузера (заодно задаёт сервер) или путь /Папка
+#   NCSHARE_BASE_FOLDER   папка команды в Nextcloud: адрес из браузера (заодно задаёт сервер) или путь /Папка.
+#                         Если задана, папка для всех не спрашивается: остаётся прежней или берётся из переменной ниже
+#   NCSHARE_EVERYONE_FOLDER  папка, доступная всем пользователям Nextcloud (пункт «Ссылка для всех»): адрес или путь;
+#                         «-» — убрать пункт
 #   NCSHARE_SERVER        адрес Nextcloud, если папка задана путём, например https://cloud.example.com
 #   NCSHARE_REMOVE_OTHER  1 — убрать другие подключения для картинок и файлов без вопроса, 0 — оставить
 set -euo pipefail
@@ -118,7 +121,7 @@ function server(input) {
     return s.replace(/[?#].*$/, "").replace(/(\/index\.php)?\/apps\/.*$/i, "").replace(/\/+$/, "");
 }
 
-// Текущая настройка подключения nc-share: ServerUrl или BaseFolder
+// Текущая настройка подключения nc-share: ServerUrl, BaseFolder или EveryoneFolder
 function current(path, field) {
     for (const i of instances(path).filter(isOurs).sort((a, b) => category(a) - category(b))) {
         try { const v = JSON.parse(i.SettingsJson || "{}")[field]; if (v) return v; } catch (e) {}
@@ -170,7 +173,7 @@ function seed(settingsDir, version) {
     return "созданы настройки XerahS: весь экран, активное окно, область, загрузка файла";
 }
 
-function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, removeOthers) {
+function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, everyoneFolder, removeOthers) {
     const out = [];
     const cfg = readJson(instancesPath, {});
     cfg.Instances = cfg.Instances || [];
@@ -196,9 +199,11 @@ function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, rem
         }
         let settings = {};
         try { settings = JSON.parse(inst.SettingsJson || "{}"); } catch (e) {}
-        if (settings.ServerUrl !== serverUrl || settings.BaseFolder !== baseFolder) {
+        // Остальные настройки (PathTemplate, PublicDays…) остаются как были, в том числе от прежних версий
+        if (settings.ServerUrl !== serverUrl || settings.BaseFolder !== baseFolder || (settings.EveryoneFolder || "") !== everyoneFolder) {
             settings.ServerUrl = serverUrl;
             settings.BaseFolder = baseFolder;
+            if (everyoneFolder) settings.EveryoneFolder = everyoneFolder; else delete settings.EveryoneFolder;
             inst.SettingsJson = JSON.stringify(settings);
             inst.ModifiedAt = now;
         }
@@ -280,9 +285,10 @@ function run(argv) {
         case "server": return server(args[0]);
         case "current-server": return current(args[0], "ServerUrl");
         case "current-folder": return current(args[0], "BaseFolder");
+        case "current-everyone": return current(args[0], "EveryoneFolder");
         case "foreign": return foreign(args[0]);
         case "seed": return seed(args[0], args[1]);
-        case "apply": return apply(args[0], args[1], args[2], args[3], args[4], args[5] === "1");
+        case "apply": return apply(args[0], args[1], args[2], args[3], args[4], args[5], args[6] === "1");
         case "hotkeys-off": return hotkeysOff(args.map(Number));
     }
     throw new Error("неизвестная команда " + cmd);
@@ -354,10 +360,11 @@ if [ -n "$input" ]; then
     [ -n "$folder" ] || fail "Не понял, какая это папка: «$input»."
     [ -n "$server" ] || server=$(jxa folder-server "$input")
 else
+    info "Папка команды — для ссылки «для команды» (её откроют те, у кого есть доступ к папке) и публичных ссылок."
     if [ -n "$cur_server" ] && [ -n "$cur_folder" ]; then
-        info "Сейчас: папка $cur_folder на $cur_server"
+        info "Сейчас: $cur_folder на $cur_server"
     else
-        info "Открой в браузере папку Nextcloud, куда класть снимки, и скопируй адрес из адресной строки."
+        info "Открой эту папку в браузере и скопируй адрес из адресной строки."
         info "Или введи путь, например /Screenshots: папки, которых нет, создадутся при первой загрузке."
     fi
     warn "Внутри выбранной папки nc-share создаст папку screenshots/ и будет класть снимки туда."
@@ -389,7 +396,43 @@ else
     ask "Всё равно продолжить? [y/N] "
     case "$REPLY" in [yYдД]*) ;; *) fail "Сервер Nextcloud недоступен: $server" ;; esac
 fi
-info "Папка: $folder"
+# Папка для всех — пункт «Ссылка для всех». Необязательна: без неё меню прежнее
+cur_everyone=$(jxa current-everyone "$instances")
+everyone="$cur_everyone"
+if [ -n "${NCSHARE_EVERYONE_FOLDER:-}" ]; then
+    if [ "$NCSHARE_EVERYONE_FOLDER" = "-" ]; then everyone=""
+    else
+        everyone=$(jxa folder "$NCSHARE_EVERYONE_FOLDER")
+        [ -n "$everyone" ] || fail "Не понял, какая это папка: «$NCSHARE_EVERYONE_FOLDER»."
+    fi
+elif [ -z "${NCSHARE_BASE_FOLDER:-}" ]; then
+    echo
+    info "Папка для всех — общая папка, которую видят все пользователи Nextcloud: пункт меню «Ссылка для всех»."
+    info "Внутри nc-share заведёт подпапку с твоим логином. Если такой папки на сервере нет — пропусти."
+    [ -z "$cur_everyone" ] || info "Сейчас: $cur_everyone"
+    for _ in 1 2 3; do
+        if [ -n "$cur_everyone" ]; then ask "Enter — оставить, «-» — убрать, или адрес другой папки: "
+        else ask "Адрес папки для всех (Enter — пропустить): "; fi
+        [ -n "$REPLY" ] || break
+        if [ "$REPLY" = "-" ]; then everyone=""; break; fi
+        candidate=$(jxa folder "$REPLY")
+        ev_server=$(jxa folder-server "$REPLY")
+        if [ -z "$candidate" ]; then
+            warn "Не понял. Нужен адрес вида https://cloud.example.com/apps/files/…?dir=/Shared или путь /Shared."
+        elif [ -n "$ev_server" ] && [ "$(jxa server "$ev_server")" != "$server" ]; then
+            warn "Эта папка на другом сервере ($ev_server), а nc-share работает с одним: $server."
+        elif [ "$candidate" = "$folder" ]; then
+            warn "Это папка команды. Нужна другая — та, что доступна всем."
+        else
+            everyone="$candidate"
+            break
+        fi
+    done
+fi
+echo
+info "Папка команды: $folder"
+if [ -n "$everyone" ]; then info "Папка для всех: $everyone"
+else info "Папка для всех не задана — пункта «Ссылка для всех» в меню не будет."; fi
 
 others=$(jxa foreign "$instances")
 remove=0
@@ -421,7 +464,7 @@ if [ -z "$(workflows_file)" ]; then
     mkdir -p "$SETTINGS"
     jxa seed "$SETTINGS" "$XERAHS_VERSION" | sed 's/^/  /'
 fi
-jxa apply "$instances" "$(workflows_file)" "$SETTINGS/ApplicationConfig.json" "$server" "$folder" "$remove" | sed 's/^/  /'
+jxa apply "$instances" "$(workflows_file)" "$SETTINGS/ApplicationConfig.json" "$server" "$folder" "$everyone" "$remove" | sed 's/^/  /'
 
 # Системные Cmd+Shift+3/4 (28 и 30): пока включены, macOS перехватывает сочетания раньше XerahS.
 # Ctrl+Cmd+Shift+3/4 (снимок в буфер) и панель Cmd+Shift+5 остаются системными
@@ -446,7 +489,12 @@ if [ -n "$loaded" ]; then info "XerahS загрузил ${loaded#Discovered plug
 
 title "Готово"
 info "Cmd+Shift+3 — весь экран, Cmd+Shift+4 — область, Ctrl+Shift+A — активное окно."
-info "После снимка — редактор, затем меню: 1 — скопировать, 2 — ссылка для команды, 3–5 — публичная на 1, 7, 30 дней."
+if [ -n "$everyone" ]; then
+    info "После снимка — редактор, затем меню: 1 — скопировать, 2 — ссылка для всех, 3 — ссылка для команды,"
+    info "4–6 — публичная на 1, 7, 30 дней."
+else
+    info "После снимка — редактор, затем меню: 1 — скопировать, 2 — ссылка для команды, 3–5 — публичная на 1, 7, 30 дней."
+fi
 info "При первой загрузке откроется браузер: войди в Nextcloud и подтверди доступ."
 if [ "$fresh" != 0 ]; then
     info ""

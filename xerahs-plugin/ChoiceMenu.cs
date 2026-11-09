@@ -7,14 +7,15 @@ using XerahS.Common;
 
 namespace NcShare.Plugin;
 
-public enum ChoiceKind { Cancel, Clipboard, Team, Public }
+// Everyone — ссылка для всех пользователей Nextcloud, Team — для тех, у кого есть доступ к папке команды
+public enum ChoiceKind { Cancel, Clipboard, Everyone, Team, Public }
 
 public sealed record Choice(ChoiceKind Kind, int Days = 0)
 {
     public Shot? Shot { get; init; }
 }
 
-// Меню выбора: цифры 1–5 или щелчок — выбор, Esc или переход в другое окно — отмена
+// Меню выбора: цифра пункта или щелчок — выбор, Esc или переход в другое окно — отмена
 sealed class ChoiceMenu : Window
 {
     readonly TaskCompletionSource<Choice> result = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -51,6 +52,8 @@ sealed class ChoiceMenu : Window
             Opacity = 0.6, FontSize = 12, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 2, 0, 6)
         });
         AddRow(panel, shot.IsImage ? "Скопировать изображение" : "Скопировать файл", new Choice(ChoiceKind.Clipboard), true);
+        // Без папки для всех пункта нет вовсе: на многих серверах такой папки нет, и номера пунктов остаются прежними
+        if (config.HasEveryoneFolder) AddRow(panel, "Ссылка для всех", new Choice(ChoiceKind.Everyone), config.EveryoneReady);
         AddRow(panel, "Ссылка для команды", new Choice(ChoiceKind.Team), config.UploadReady);
         panel.Children.Add(new TextBlock { Text = "Публичная ссылка", Opacity = 0.6, FontSize = 12, Margin = new Thickness(0, 6, 0, 0) });
         foreach (int days in config.Days)
