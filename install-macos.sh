@@ -7,6 +7,11 @@
 # копируются в ~/Documents/XerahS/nc-share-backup/<дата>. Повторный запуск обновляет плагин; сервер и папки
 # Nextcloud сохраняются, если их не поменять.
 #
+# --link-account — только один этап: учётка для публичных ссылок. Нужна, если публичные ссылки без пароля сервер
+# разрешает только в одной папке и только отдельной учётке: файл туда загружает своя учётка, а ссылку создаёт эта.
+# Спрашивает папку, логин и пароль приложения этой учётки, проверяет их на сервере; остальное не трогает:
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/petrshirin/xerahs-nextcloud-share/main/install-macos.sh)" - --link-account
+#
 # Переменные — для проверки и установки без вопросов:
 #   NCSHARE_REPO          репозиторий GitHub «владелец/имя», из релизов которого берётся плагин
 #   NCSHARE_ZIP           свой архив плагина вместо скачивания (собирает xerahs-plugin/pack.sh)
@@ -16,6 +21,10 @@
 #                         «-» — убрать пункт
 #   NCSHARE_SERVER        адрес Nextcloud, если папка задана путём, например https://cloud.example.com
 #   NCSHARE_REMOVE_OTHER  1 — убрать другие подключения для картинок и файлов без вопроса, 0 — оставить
+# С --link-account:
+#   NCSHARE_PUBLIC_FOLDER папка для публичных ссылок: адрес или путь; «-» — убрать учётку для ссылок
+#   NCSHARE_LINK_LOGIN    логин учётки, которая создаёт ссылки
+#   NCSHARE_LINK_PASSWORD её пароль приложения
 set -euo pipefail
 
 REPO="${NCSHARE_REPO:-petrshirin/xerahs-nextcloud-share}"
@@ -39,6 +48,19 @@ warn() { printf '  \033[33m%s\033[0m\n' "$*"; }
 fail() { printf '\n\033[31mОшибка:\033[0m %s\n' "$*" >&2; exit 1; }
 # Ответ читается с терминала: при запуске через curl | bash stdin занят самим скриптом
 ask() { printf '  %s' "$1"; REPLY=""; { IFS= read -r REPLY < /dev/tty; } 2>/dev/null || echo; }
+# То же без эха — для пароля
+ask_secret() { printf '  %s' "$1"; REPLY=""; { IFS= read -rs REPLY < /dev/tty; } 2>/dev/null || true; echo; }
+
+mode=install
+for arg in "$@"; do
+    case "$arg" in
+        --link-account) mode=link ;;
+        *) fail "Не знаю параметр «$arg». Есть только --link-account." ;;
+    esac
+done
+
+# С этой версии плагин умеет создавать публичные ссылки отдельной учёткой
+LINK_SINCE=0.8.0
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -268,6 +290,49 @@ function apply(instancesPath, workflowsPath, appPath, serverUrl, baseFolder, eve
     return out.join("\n");
 }
 
+// --link-account: папка для публичных ссылок и признак, что их создаёт отдельная учётка, — в обоих подключениях
+// nc-share. Пустая папка — убрать и то и другое. Остальные настройки не трогаются
+function link(instancesPath, publicFolder) {
+    const cfg = readJson(instancesPath, null);
+    const ours = ((cfg && cfg.Instances) || []).filter(isOurs);
+    if (!ours.length) throw new Error("нет подключений nc-share в " + instancesPath);
+    const now = new Date().toISOString();
+    for (const inst of ours) {
+        let settings = {};
+        try { settings = JSON.parse(inst.SettingsJson || "{}"); } catch (e) {}
+        if (publicFolder) {
+            settings.PublicFolder = publicFolder;
+            settings.LinkAccount = true;
+        } else {
+            delete settings.PublicFolder;
+            delete settings.LinkAccount;
+        }
+        inst.SettingsJson = JSON.stringify(settings);
+        inst.ModifiedAt = now;
+    }
+    writeJson(instancesPath, cfg);
+    return publicFolder ? "публичные ссылки — из " + publicFolder + ", создаёт их учётка для ссылок"
+                        : "учётка для ссылок убрана: публичные ссылки — снова из папки команды";
+}
+
+// /Папка/Подпапка → путь для WebDAV, каждая часть закодирована
+const davPath = path => path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+
+// Ответ /ocs/v2.php/cloud/user: логин и имя
+function ocsUser(path) {
+    const d = (readJson(path, {}).ocs || {}).data || {};
+    return d.id ? d.id + (d.displayname && d.displayname !== d.id ? " (" + d.displayname + ")" : "") : "";
+}
+
+// Правила публичных ссылок для вошедшей учётки: «обязателен пароль (1/0) предел срока в днях или пусто»
+function linkRules(path) {
+    const caps = ((readJson(path, {}).ocs || {}).data || {}).capabilities || {};
+    const pub = (caps.files_sharing || {}).public || {};
+    const exp = pub.expire_date || {};
+    if (pub.enabled === false) return "off";
+    return ((pub.password || {}).enforced ? "1" : "0") + " " + (exp.enforced && exp.days ? exp.days : "");
+}
+
 // Сразу в системе: одного plist мало, macOS применяет его не всегда. Возвращает сочетания, которые не выключились
 function hotkeysOff(keys) {
     $.NSBundle.bundleWithPath("/System/Library/PrivateFrameworks/SkyLight.framework").load;
@@ -286,6 +351,11 @@ function run(argv) {
         case "current-server": return current(args[0], "ServerUrl");
         case "current-folder": return current(args[0], "BaseFolder");
         case "current-everyone": return current(args[0], "EveryoneFolder");
+        case "current": return String(current(args[0], args[1]));
+        case "link": return link(args[0], args[1]);
+        case "dav-path": return davPath(args[0]);
+        case "ocs-user": return ocsUser(args[0]);
+        case "link-rules": return linkRules(args[0]);
         case "foreign": return foreign(args[0]);
         case "seed": return seed(args[0], args[1]);
         case "apply": return apply(args[0], args[1], args[2], args[3], args[4], args[5], args[6] === "1");
@@ -296,9 +366,186 @@ function run(argv) {
 JS
 jxa() { osascript -l JavaScript "$tmp/configure.js" "$@"; }
 
+# Запуск XerahS и проверка по логу, что плагин загрузился
+start_xerahs() {
+    local log before loaded=""
+    log="$DATA/Logs/$(date +%Y-%m)/XerahS-$(date +%Y%m%d).log"
+    before=$([ -f "$log" ] && wc -c < "$log" || echo 0)
+    open "$APP"
+    for _ in $(seq 1 40); do
+        [ -f "$log" ] && loaded=$(tail -c +$((before + 1)) "$log" | grep -a -o "Discovered plugin: nc-share v[0-9.]*" | tail -1 || true)
+        [ -n "$loaded" ] && break
+        sleep 0.5
+    done
+    if [ -n "$loaded" ]; then info "XerahS загрузил ${loaded#Discovered plugin: }"; else warn "Не вижу в логе, что XerahS загрузил плагин: $log"; fi
+}
+
+# Секрет из Связки ключей — так же, как его читает XerahS: /usr/bin/security, сервис XerahS
+secret() { security find-generic-password -a "$1" -s XerahS -w 2>/dev/null || true; }
+
+# Запрос от имени учётки для ссылок. Пароль — в файле настроек curl, а не в командной строке: её видят все процессы
+link_curl() { curl -sS --max-time 20 -K "$tmp/link.curl" -H "OCS-APIRequest: true" "$@" 2>/dev/null || true; }
+
+# Адрес или путь папки для публичных ссылок → /Папка. Подпапку с логином nc-share добавляет сам, поэтому адрес из
+# браузера вида /Папка/<логин>/screenshots/2026/11 обрезается до /Папка. Не подошло — пусто и предупреждение
+public_folder() {
+    local f s g
+    f=$(jxa folder "$1")
+    s=$(jxa folder-server "$1")
+    if [ -z "$f" ]; then
+        warn "Не понял. Нужен адрес вида https://cloud.example.com/apps/files/…?dir=/Public или путь /Public." >&2
+    elif [ -n "$s" ] && [ "$(jxa server "$s")" != "$server" ]; then
+        warn "Эта папка на другом сервере ($s), а nc-share работает с одним: $server." >&2
+    else
+        g="$f/"
+        if [ -n "$own_login" ] && [ "${g%%/"$own_login"/*}" != "$g" ] && [ -n "${g%%/"$own_login"/*}" ]; then
+            f="${g%%/"$own_login"/*}"
+            info "Подпапку $own_login nc-share добавит сам — беру папку выше: $f" >&2
+        fi
+        printf '%s' "$f"
+    fi
+}
+
+# --link-account: сервер разрешает публичные ссылки без пароля только отдельной учётке и только в своей папке.
+# Файл туда загружает своя учётка, а ссылку создаёт эта. Её логин и пароль приложения ложатся в Связку ключей рядом
+# со своим входом (ncshare:<ключ>-links:…), папка и признак LinkAccount — в подключение nc-share
+link_account() {
+    local instances="$SETTINGS/uploader-instances.json"
+    local server have key own_login cur_public cur_login public="" login pass code who rules perms days
+    server=$(jxa current "$instances" ServerUrl)
+    have=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$PLUGIN_DIR/plugin.json" 2>/dev/null || true)
+    [ -n "$server" ] && [ -n "$have" ] || fail "nc-share ещё не установлен. Сначала запусти установщик без --link-account."
+    ! older "$have" "$LINK_SINCE" || fail "Установлен nc-share $have, учётку для ссылок он не знает — нужен $LINK_SINCE или новее. Сначала обнови его: запусти установщик без --link-account."
+    server="${server%/}"
+    key=$(jxa current "$instances" SecretKey)
+    key="ncshare:${key:-default}"
+    own_login=$(secret "$key:loginName")
+    cur_public=$(jxa current "$instances" PublicFolder)
+    cur_login=""
+    [ "$(jxa current "$instances" LinkAccount)" != true ] || cur_login=$(secret "$key-links:loginName")
+    days=$(jxa current "$instances" PublicDays)
+
+    title "1/3. Папка для публичных ссылок"
+    info "Для сервера, где публичные ссылки без пароля можно создавать только в одной папке и только отдельной учёткой."
+    info "Файл туда загрузит твоя учётка, а ссылку создаст та. Остальные пункты меню не меняются."
+    info "Внутри папки у каждого своя подпапка с логином: <папка>/${own_login:-<логин>}/screenshots/2026/11."
+    [ -z "$cur_public" ] || info "Сейчас: $cur_public, ссылки создаёт ${cur_login:-учётка не задана}"
+    if [ -n "${NCSHARE_PUBLIC_FOLDER:-}" ]; then
+        if [ "$NCSHARE_PUBLIC_FOLDER" != "-" ]; then
+            public=$(public_folder "$NCSHARE_PUBLIC_FOLDER")
+            [ -n "$public" ] || fail "Не понял, какая это папка: «$NCSHARE_PUBLIC_FOLDER»."
+        fi
+    else
+        for _ in 1 2 3; do
+            if [ -n "$cur_public" ]; then ask "Enter — оставить, «-» — убрать, или адрес другой папки: "
+            else ask "Открой папку в браузере и вставь адрес (Enter — выйти): "; fi
+            if [ -z "$REPLY" ]; then
+                [ -n "$cur_public" ] || { info "Ничего не менял."; return 0; }
+                public="$cur_public"; break
+            fi
+            [ "$REPLY" != "-" ] || break
+            public=$(public_folder "$REPLY")
+            [ -z "$public" ] || break
+        done
+        [ -n "$public" ] || [ "$REPLY" = "-" ] || fail "Папка не задана."
+    fi
+
+    if [ -n "$public" ]; then
+        title "2/3. Учётка для ссылок"
+        info "Логин учётки, которой сервер разрешает публичные ссылки в этой папке, и её пароль приложения"
+        info "(в Nextcloud под этой учёткой: «Настройки» → «Безопасность» → «Создать пароль приложения»)."
+        login="${NCSHARE_LINK_LOGIN:-}"
+        pass="${NCSHARE_LINK_PASSWORD:-}"
+        if [ -z "$login" ]; then
+            if [ -n "$cur_login" ]; then ask "Логин (Enter — $cur_login): "; login="${REPLY:-$cur_login}"
+            else ask "Логин: "; login="$REPLY"; fi
+        fi
+        login=$(printf '%s' "$login" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        [ -n "$login" ] || fail "Логин не задан."
+        [ "$login" != "$own_login" ] || fail "Это твоя учётка — та, что загружает файлы. Нужна другая: та, которой сервер разрешает ссылки."
+        if [ -z "$pass" ]; then
+            if [ "$login" = "$cur_login" ]; then
+                ask_secret "Пароль приложения (Enter — оставить прежний): "
+                pass="${REPLY:-$(secret "$key-links:appPassword")}"
+            else
+                ask_secret "Пароль приложения (не отображается): "
+                pass="$REPLY"
+            fi
+        fi
+        pass="${pass//[[:space:]]/}"   # при вставке из браузера бывают пробелы по краям
+        [ -n "$pass" ] || fail "Пароль приложения не задан."
+        case "$login$pass" in *'"'* | *'\'*) fail "В логине или пароле есть кавычка или обратная косая черта — так сохранить не получится." ;; esac
+
+        title "3/3. Проверка"
+        (umask 077; printf 'user = "%s:%s"\n' "$login" "$pass" > "$tmp/link.curl")
+        code=$(link_curl -o "$tmp/user.json" -w '%{http_code}' "$server/ocs/v2.php/cloud/user?format=json")
+        case "$code" in
+            200) who=$(jxa ocs-user "$tmp/user.json"); info "Вход: ${who:-$login}" ;;
+            401) fail "Nextcloud не принял логин «$login» с этим паролем приложения." ;;
+            000) fail "Нет связи с $server." ;;
+            *) fail "Вход учётки для ссылок — HTTP $code." ;;
+        esac
+        link_curl -o "$tmp/caps.json" "$server/ocs/v2.php/cloud/capabilities?format=json" >/dev/null
+        rules=$(jxa link-rules "$tmp/caps.json")
+        case "$rules" in
+            off) fail "Публичные ссылки для учётки $login на сервере выключены." ;;
+            1*) warn "Для учётки $login пароль публичных ссылок тоже обязателен: ссылки будут с паролем." ;;
+            *) info "Пароль для публичных ссылок не обязателен." ;;
+        esac
+        [ -z "${rules#* }" ] || info "Предел срока ссылки на сервере — ${rules#* } дн."
+        code=$(link_curl -X PROPFIND -H "Depth: 0" -H "Content-Type: application/xml" -o "$tmp/folder.xml" -w '%{http_code}' \
+            --data '<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:prop><oc:permissions/></d:prop></d:propfind>' \
+            "$server/remote.php/webdav/$(jxa dav-path "$public")")
+        case "$code" in
+            207) perms=$(sed -n 's/.*<oc:permissions>\([A-Z]*\)<\/oc:permissions>.*/\1/p' "$tmp/folder.xml" | head -1)
+                 case "$perms" in
+                     *R*) info "Папка $public: учётка её видит, право делиться есть." ;;
+                     *) warn "Папка $public: учётка её видит, но права делиться в ней нет (права: ${perms:-?})."
+                        ask "Всё равно сохранить? [y/N] "
+                        case "$REPLY" in [yYдД]*) ;; *) fail "Без права делиться учётка не создаст ссылку." ;; esac ;;
+                 esac ;;
+            404) fail "Учётка $login не видит папку $public. Ей нужен доступ к этой папке по тому же пути, с правом делиться." ;;
+            000) fail "Нет связи с $server." ;;
+            *) fail "Проверка папки $public — HTTP $code." ;;
+        esac
+    fi
+
+    title "Настройка"
+    stop_xerahs
+    mkdir -p "$BACKUP"
+    cp -R "$SETTINGS" "$BACKUP/Settings"
+    info "Копия настроек: $BACKUP"
+    jxa link "$instances" "$public" | sed 's/^/  /'
+    if [ -n "$public" ]; then
+        # security -i читает команды со stdin: пароль не попадает в командную строку
+        printf 'add-generic-password -a "%s" -s "XerahS" -w "%s" -U\n' \
+            "$key-links:loginName" "$login" "$key-links:appPassword" "$pass" "$key-links:server" "$server" | security -i >/dev/null 2>&1 || true
+        [ "$(secret "$key-links:appPassword")" = "$pass" ] && [ "$(secret "$key-links:server")" = "$server" ] \
+            || fail "Не удалось сохранить вход учётки $login в Связке ключей."
+        info "вход учётки $login — в Связке ключей (XerahS, $key-links:…)"
+    else
+        printf 'delete-generic-password -a "%s" -s "XerahS"\n' "$key-links:loginName" "$key-links:appPassword" "$key-links:server" \
+            | security -i >/dev/null 2>&1 || true
+        info "вход учётки для ссылок удалён из Связки ключей"
+    fi
+    start_xerahs
+
+    title "Готово"
+    if [ -n "$public" ]; then
+        info "Публичные ссылки (пункты на ${days:-1, 7, 30} дней): файл — в $public/${own_login:-<логин>}/…, ссылку создаёт $login."
+        info "Убрать: запусти установщик с --link-account и введи «-»."
+    fi
+    info "Вернуть настройки как были: pkill -x XerahS; cp -R \"$BACKUP/Settings/\" \"$SETTINGS/\""
+}
+
 [ "$(uname -s)" = Darwin ] || fail "Этот установщик — для macOS."
 # Под Rosetta uname -m говорит x86_64 и на Apple Silicon, поэтому смотрим на процессор
 if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then arch=arm64; else arch=x64; fi
+
+if [ "$mode" = link ]; then
+    link_account
+    exit 0
+fi
 
 title "1/5. XerahS"
 # fresh: 1 — XerahS поставлен впервые, 2 — обновлён; в обоих случаях нужно разрешение на запись экрана
@@ -476,16 +723,7 @@ still=$(jxa hotkeys-off 28 30)
     || warn "macOS не дала выключить сочетания $still: выключи вручную — Клавиатура → Сочетания клавиш → Снимки экрана."
 
 title "5/5. Запуск XerahS"
-log="$DATA/Logs/$(date +%Y-%m)/XerahS-$(date +%Y%m%d).log"
-before=$([ -f "$log" ] && wc -c < "$log" || echo 0)
-open "$APP"
-loaded=""
-for _ in $(seq 1 40); do
-    [ -f "$log" ] && loaded=$(tail -c +$((before + 1)) "$log" | grep -a -o "Discovered plugin: nc-share v[0-9.]*" | tail -1 || true)
-    [ -n "$loaded" ] && break
-    sleep 0.5
-done
-if [ -n "$loaded" ]; then info "XerahS загрузил ${loaded#Discovered plugin: }"; else warn "Не вижу в логе, что XerahS загрузил плагин: $log"; fi
+start_xerahs
 
 title "Готово"
 info "Cmd+Shift+3 — весь экран, Cmd+Shift+4 — область, Ctrl+Shift+A — активное окно."

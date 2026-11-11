@@ -19,11 +19,13 @@ public sealed class NcShareUploader : FileUploader, IUploadHandler
 
     readonly NcShareConfig config;
     readonly CredentialStore credentials;
+    readonly CredentialStore linkCredentials;
 
-    public NcShareUploader(NcShareConfig config, CredentialStore credentials)
+    public NcShareUploader(NcShareConfig config, CredentialStore credentials, CredentialStore linkCredentials)
     {
         this.config = config;
         this.credentials = credentials;
+        this.linkCredentials = linkCredentials;
     }
 
     public override UploadResult Upload(Stream stream, string fileName)
@@ -102,16 +104,27 @@ public sealed class NcShareUploader : FileUploader, IUploadHandler
         }
 
         bool isPublic = choice.Kind == ChoiceKind.Public;
+        // Публичную ссылку создаёт учётка для ссылок, если она задана, — загружает файл всё равно своя.
+        // Её проверяем до загрузки: без неё ссылки не будет, и файл загружать незачем
+        NextcloudClient nc = new(config, credential);
+        NextcloudClient linker = nc;
+        if (isPublic && config.LinkAccount)
+        {
+            Credential link = linkCredentials.Get() ?? throw new NcException(
+                "Не задана учётка для публичных ссылок (или она для другого сервера). Задайте её: install-macos.sh --link-account.");
+            linker = new NextcloudClient(config, link, linkAccount: true);
+        }
+
         DateTime until = DateTime.Today.AddDays(choice.Days);
         string note = isPublic ? "Публичная, до " + until.ToString("dd.MM.yyyy")
                     : choice.Kind == ChoiceKind.Everyone ? "Для всех в Nextcloud, без срока" : "Для команды, без срока";
         Action<double> progress = Toast.Progress(shot, "Загружаю в Nextcloud…", note);
 
-        NextcloudClient nc = new(config, credential);
         UploadTarget target = config.TargetFor(choice.Kind, shot.FileName, credential.LoginName);
         string folder = target.Folder;
-        // Правила публичных ссылок читаются, пока идёт загрузка
-        Task<PublicLinkRules>? rules = isPublic ? nc.GetPublicLinkRulesAsync(CancellationToken.None) : null;
+        // Правила публичных ссылок читаются, пока идёт загрузка. Они свои у каждой учётки: администратор
+        // мог исключить её группу из обязательного пароля
+        Task<PublicLinkRules>? rules = isPublic ? linker.GetPublicLinkRulesAsync(CancellationToken.None) : null;
         try
         {
             string? fileId = await nc.UploadAsync(target, shot.FileName, shot.Data, progress, CancellationToken.None).ConfigureAwait(false);
@@ -126,15 +139,16 @@ public sealed class NcShareUploader : FileUploader, IUploadHandler
                     until = DateTime.Today.AddDays(max);
                     note = "Публичная, до " + until.ToString("dd.MM.yyyy") + " — дольше сервер не разрешает";
                 }
-                if (r.PasswordRequired) password = await nc.GeneratePasswordAsync(r, CancellationToken.None).ConfigureAwait(false);
-                url = await nc.CreatePublicLinkAsync(folder + "/" + shot.FileName, until, password, CancellationToken.None).ConfigureAwait(false);
+                if (r.PasswordRequired) password = await linker.GeneratePasswordAsync(r, CancellationToken.None).ConfigureAwait(false);
+                url = await linker.CreatePublicLinkAsync(folder + "/" + shot.FileName, until, password, CancellationToken.None).ConfigureAwait(false);
                 // Ссылка с паролем — без хвоста: /s/<token>/preview до ввода пароля отвечает 404, а /s/<token> спрашивает пароль
                 if (password == null) url += shot.IsImage ? config.PublicLinkSuffix : config.FilePublicLinkSuffix;
             }
             // Без index.php сервер отдаёт 404
             else url = fileId != null ? config.Server + "/index.php/f/" + fileId
                                       : config.Server + "/index.php/apps/files/?dir=" + Uri.EscapeDataString(folder);
-            DebugHelper.WriteLine($"[nc-share] загружено: {folder}/{shot.FileName} → {url}{(password != null ? ", с паролем" : "")}");
+            DebugHelper.WriteLine($"[nc-share] загружено: {folder}/{shot.FileName} → {url}{(password != null ? ", с паролем" : "")}" +
+                                  (linker != nc ? $", ссылку создала учётка {linker.LoginName}" : ""));
             if (password == null)
             {
                 Toast.Post(shot, "Ссылка скопирована", note, url);

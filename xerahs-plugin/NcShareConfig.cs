@@ -14,13 +14,22 @@ public sealed class NcShareConfig
     // Адрес Nextcloud, например https://cloud.example.com (если Nextcloud стоит в подкаталоге — вместе с ним)
     public string ServerUrl { get; set; } = "";
 
-    // Папка команды: сюда ложатся файлы для ссылки «для команды» и публичных ссылок; если её нет, создаётся при первой
-    // загрузке. Ссылку для команды откроют те, у кого есть доступ к папке. Пока не заданы сервер и папка, этих пунктов нет
+    // Папка команды: сюда ложатся файлы для ссылки «для команды» и публичных ссылок (если не задана PublicFolder); если её
+    // нет, создаётся при первой загрузке. Ссылку для команды откроют те, у кого есть доступ к папке. Пока не заданы сервер
+    // и папка, этих пунктов нет
     public string BaseFolder { get; set; } = "";
 
     // Папка, доступная всем пользователям Nextcloud, — пункт «Ссылка для всех». Внутри неё у каждого своя подпапка
     // с логином: файлы коллег не смешиваются и не перезаписываются. Пусто — пункта в меню нет
     public string EveryoneFolder { get; set; } = "";
+
+    // Папка для публичных ссылок — если на сервере они разрешены не везде, а только в ней. Внутри у каждого своя подпапка
+    // с логином, как в папке для всех. Пусто — публичные ссылки из папки команды
+    public string PublicFolder { get; set; } = "";
+
+    // Публичные ссылки создаёт отдельная учётка: файл загружает своя, а делиться без пароля может только эта.
+    // Её логин и пароль приложения лежат в хранилище секретов, их кладёт установщик (install-macos.sh --link-account)
+    public bool LinkAccount { get; set; }
 
     // Путь внутри папки. Сначала тип файла, потом доступ — тип постоянен, а виды доступа могут поменяться.
     // {type} — папка по типу файла, {access} — папка по виду ссылки (в папке для всех её нет), %y/%mo — год и месяц
@@ -43,11 +52,21 @@ public sealed class NcShareConfig
     [JsonIgnore]
     public string SecretKeyOrDefault => string.IsNullOrWhiteSpace(SecretKey) ? "default" : SecretKey;
 
+    // Вход учётки для публичных ссылок — рядом со своим, под отдельным ключом
+    [JsonIgnore]
+    public string LinkSecretKey => SecretKeyOrDefault + "-links";
+
     [JsonIgnore]
     public string Server => ServerUrl.Trim().TrimEnd('/');
 
     [JsonIgnore]
     public bool UploadReady => Server.Length > 0 && BaseFolder.Trim().Length > 0;
+
+    [JsonIgnore]
+    public bool HasPublicFolder => PublicFolder.Trim().Length > 0;
+
+    [JsonIgnore]
+    public bool PublicReady => HasPublicFolder ? Server.Length > 0 : UploadReady;
 
     [JsonIgnore]
     public bool HasEveryoneFolder => EveryoneFolder.Trim().Length > 0;
@@ -67,16 +86,18 @@ public sealed class NcShareConfig
         }
     }
 
-    // Куда загружать: BaseFolder/screenshots/team/2026/10 или EveryoneFolder/<логин>/screenshots/2026/10.
-    // Root — папка, выше которой плагин не создаёт папок: её дал администратор или выбрал пользователь
+    // Куда загружать: BaseFolder/screenshots/team/2026/10, EveryoneFolder/<логин>/screenshots/2026/10 или
+    // PublicFolder/<логин>/screenshots/2026/10. Root — папка, выше которой плагин не создаёт папок: её дал администратор
+    // или выбрал пользователь. Отдельные папки (для всех, для публичных ссылок) — уже по смыслу, папки доступа в них нет
     public UploadTarget TargetFor(ChoiceKind kind, string fileName, string login)
     {
-        bool everyone = kind == ChoiceKind.Everyone;
-        string root = Normalize(everyone ? EveryoneFolder : BaseFolder);
-        string access = everyone ? "" : kind == ChoiceKind.Public ? PublicDir : TeamDir;
+        string? own = kind == ChoiceKind.Everyone ? EveryoneFolder
+                    : kind == ChoiceKind.Public && HasPublicFolder ? PublicFolder : null;
+        string root = Normalize(own ?? BaseFolder);
+        string access = own != null ? "" : kind == ChoiceKind.Public ? PublicDir : TeamDir;
         string path = PathTemplate.Replace("{type}", TypeDirFor(fileName).Trim('/')).Replace("{access}", access.Trim('/'));
         path = NameParser.Parse(NameParserType.Default, path);
-        if (everyone) path = SafeName(login) + "/" + path;
+        if (own != null) path = SafeName(login) + "/" + path;
         return new UploadTarget(root, string.Join("/", new[] { root }.Concat(path.Split('/', StringSplitOptions.RemoveEmptyEntries))));
     }
 

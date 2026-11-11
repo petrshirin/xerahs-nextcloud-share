@@ -11,7 +11,7 @@ public sealed class NcShareProvider : UploaderProviderBase
     public override string ProviderId => "ncshare";
     public override string Name => "nc-share";
     public override string Description => "Меню после снимка: буфер, ссылка для всех или для команды, публичная ссылка со сроком (Nextcloud)";
-    public override Version Version => new(0, 7, 0);
+    public override Version Version => new(0, 8, 0);
     // Image — снимки XerahS, File — файлы из папки, за которой следит XerahS (записи и снимки системной панели Cmd+Shift+5)
     public override UploaderCategory[] SupportedCategories => new[] { UploaderCategory.Image, UploaderCategory.File };
     public override Type ConfigModelType => typeof(NcShareConfig);
@@ -19,7 +19,8 @@ public sealed class NcShareProvider : UploaderProviderBase
     public override Uploader CreateInstance(string settingsJson)
     {
         NcShareConfig config = JsonConvert.DeserializeObject<NcShareConfig>(string.IsNullOrWhiteSpace(settingsJson) ? "{}" : settingsJson) ?? new();
-        return new NcShareUploader(config, new CredentialStore(Secrets, config.SecretKeyOrDefault, config.Server));
+        return new NcShareUploader(config, new CredentialStore(Secrets, config.SecretKeyOrDefault, config.Server),
+                                   new CredentialStore(Secrets, config.LinkSecretKey, config.Server));
     }
 
     public override Dictionary<UploaderCategory, string[]> GetSupportedFileTypes() => new()

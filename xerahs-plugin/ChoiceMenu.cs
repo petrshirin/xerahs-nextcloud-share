@@ -57,7 +57,7 @@ sealed class ChoiceMenu : Window
         AddRow(panel, "Ссылка для команды", new Choice(ChoiceKind.Team), config.UploadReady);
         panel.Children.Add(new TextBlock { Text = "Публичная ссылка", Opacity = 0.6, FontSize = 12, Margin = new Thickness(0, 6, 0, 0) });
         foreach (int days in config.Days)
-            AddRow(panel, "На " + DaysText(days), new Choice(ChoiceKind.Public, days), config.UploadReady);
+            AddRow(panel, "На " + DaysText(days), new Choice(ChoiceKind.Public, days), config.PublicReady);
         Content = panel;
 
         KeyDown += OnKeyDown;

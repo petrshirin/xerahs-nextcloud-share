@@ -35,19 +35,28 @@ public sealed class NextcloudClient
 
     readonly NcShareConfig config;
     readonly Credential credential;
+    // Учётка для публичных ссылок (LinkAccount): её вход задаёт установщик, а не Login Flow, поэтому на 401
+    // свой вход не сбрасывается
+    readonly bool linkAccount;
 
-    public NextcloudClient(NcShareConfig config, Credential credential)
+    public NextcloudClient(NcShareConfig config, Credential credential, bool linkAccount = false)
     {
         this.config = config;
         this.credential = credential;
+        this.linkAccount = linkAccount;
     }
+
+    public string LoginName => credential.LoginName;
 
     static HttpClient CreateHttp()
     {
         SocketsHttpHandler handler = new()
         {
             ConnectTimeout = TimeSpan.FromSeconds(10),   // зависшая попытка соединения не тянется полминуты
-            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2)
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+            // Без кук: каждый запрос входит своим паролем приложения. С куками Nextcloud узнаёт пользователя по сессии,
+            // а не по паролю, и запрос своей учётки выполнялся бы от учётки для ссылок (и наоборот) — клиент общий
+            UseCookies = false
         };
         HttpClient http = new(handler) { Timeout = Timeout.InfiniteTimeSpan };
         // Под этим именем пароль приложения виден в Nextcloud: Настройки → Безопасность
@@ -210,21 +219,25 @@ public sealed class NextcloudClient
         }
     }
 
-    static void Check(Response r, string action)
+    void Check(Response r, string action)
     {
         if ((int)r.Status < 400) return;
-        string hint = r.Status switch
+        string hint = (r.Status, linkAccount) switch
         {
-            HttpStatusCode.Unauthorized => "Пароль приложения не подходит — при следующей загрузке nc-share попросит войти заново.",
-            HttpStatusCode.Forbidden => "Нет прав в папке (нужны запись и, для публичных ссылок, право делиться) или публичные ссылки запрещены на сервере.",
-            HttpStatusCode.NotFound => "Не найден путь — проверьте адрес сервера и папки (BaseFolder, EveryoneFolder) в настройках nc-share.",
-            HttpStatusCode.Conflict => "Не удалось создать папку — проверьте папки (BaseFolder, EveryoneFolder) в настройках nc-share.",
+            (HttpStatusCode.Unauthorized, false) => "Пароль приложения не подходит — при следующей загрузке nc-share попросит войти заново.",
+            (HttpStatusCode.Unauthorized, true) => $"Учётка для публичных ссылок ({credential.LoginName}) не входит: пароль приложения отозван или неверен. " +
+                                                   "Задайте его заново: install-macos.sh --link-account.",
+            (HttpStatusCode.Forbidden, _) => "Нет прав в папке (нужны запись и, для публичных ссылок, право делиться) или публичные ссылки запрещены на сервере.",
+            (HttpStatusCode.NotFound, true) => $"Учётка для публичных ссылок ({credential.LoginName}) не видит файл — у неё должен быть доступ к папке PublicFolder.",
+            (HttpStatusCode.NotFound, false) => "Не найден путь — проверьте адрес сервера и папки (BaseFolder, EveryoneFolder, PublicFolder) в настройках nc-share.",
+            (HttpStatusCode.Conflict, _) => "Не удалось создать папку — проверьте папки (BaseFolder, EveryoneFolder, PublicFolder) в настройках nc-share.",
             _ => r.Body.Length > 300 ? r.Body.Substring(0, 300) : r.Body
         };
         // На отказ (400, 403) сервер обычно объясняет причину сам, на языке пользователя — это точнее подсказки
         if (r.Status is HttpStatusCode.BadRequest or HttpStatusCode.Forbidden && ServerMessage(r.Body) is string message)
             hint = message;
-        throw new NcException($"{action} — HTTP {(int)r.Status}\n{hint}") { Unauthorized = r.Status == HttpStatusCode.Unauthorized };
+        if (linkAccount) action += $" (учётка {credential.LoginName})";
+        throw new NcException($"{action} — HTTP {(int)r.Status}\n{hint}") { Unauthorized = r.Status == HttpStatusCode.Unauthorized && !linkAccount };
     }
 
     // Текст ошибки от сервера: OCS — ocs.meta.message, WebDAV — <s:message>
